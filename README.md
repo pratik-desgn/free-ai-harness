@@ -18,7 +18,9 @@ It uses legitimate provider APIs and local Ollama. It does **not** create accoun
 - Built-in web search, safe HTTP, local workspace file tools, restricted test execution, time, and deterministic chess-square reasoning
 - Private local Ollama fallback that the service starts automatically when installed
 
-Supported connections: Groq, Gemini, GitHub Models, OpenRouter, Cloudflare Workers AI, Mistral, Cerebras, and SambaNova. The browser never asks the user to select one.
+Supported connections: NVIDIA NIM, Z.AI/GLM, Hugging Face Inference Providers, Groq, Gemini, GitHub Models, OpenRouter, Cloudflare Workers AI, Mistral, Cerebras, SambaNova, and any additional OpenAI-compatible endpoint through the custom connector. One NVIDIA key exposes the harness to free prototype endpoints for DeepSeek, Kimi, GLM, Nemotron, MiniMax, Qwen, GPT-OSS, and other chat models discovered from NVIDIA's live catalog. The browser never asks the end user to select one.
+
+“One login” means the end user signs into this harness once after an administrator completes provider onboarding. It cannot mean one password signs into unrelated vendors: providers issue account-specific API keys and do not share a universal identity system. Keys are connected once in the dashboard, encrypted, and then invisible to end users.
 
 ## Run
 
@@ -73,6 +75,8 @@ Primary routes:
 “Free” is not one fungible token balance. Providers enforce different request/day, token/minute, model, trial-credit, and acceptable-use limits. A rate limit is a ceiling, not a promised daily grant. Live model and quota responses are therefore authoritative, and the harness does not promise “one billion free tokens.”
 
 OpenAI and Anthropic commercial APIs are not treated as recurring free providers. Their consumer subscriptions cannot be reused as API access. Image and hosted audio routes require a compatible connected provider; local Ollama supplies chat and embeddings, not those modalities.
+
+Likewise, website-only consumer credits are not scraped. Higgsfield currently has no public general API suitable for this pool. DeepSeek and Kimi are available through NVIDIA's free prototype endpoints; their direct metered APIs are not enabled in free-only mode.
 
 ## Security
 

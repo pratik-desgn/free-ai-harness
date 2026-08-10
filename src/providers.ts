@@ -45,6 +45,60 @@ export function configuredProviders(env: NodeJS.ProcessEnv = process.env): Provi
           ],
         }
       : undefined,
+    env.NVIDIA_API_KEY
+      ? {
+          id: "nvidia",
+          label: "NVIDIA NIM Free Prototype Endpoints",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          apiKey: env.NVIDIA_API_KEY,
+          freeEligible: true,
+          quotaKind: "trial",
+          dataMayTrain: false,
+          models: [
+            model("deepseek-ai/deepseek-v4-pro", 1_000_000, 97, 70, 98, 98),
+            model("deepseek-ai/deepseek-v4-flash", 1_000_000, 93, 89, 95, 95),
+            model("moonshotai/kimi-k2.6", 262_000, 96, 75, 97, 96, ["text", "vision", "tools", "json"]),
+            model("z-ai/glm-5.2", 1_000_000, 96, 72, 97, 97),
+            model("nvidia/nemotron-3-ultra-550b-a55b", 1_000_000, 95, 73, 95, 97),
+            model("minimaxai/minimax-m2.7", 205_000, 91, 82, 93, 92),
+            model("qwen/qwen3-coder-480b-a35b-instruct", 262_000, 92, 82, 97, 91),
+            model("openai/gpt-oss-120b", 131_072, 88, 90, 91, 92),
+          ],
+        }
+      : undefined,
+    env.ZAI_API_KEY
+      ? {
+          id: "zai",
+          label: "Z.AI Free GLM Flash",
+          baseUrl: "https://api.z.ai/api/paas/v4",
+          apiKey: env.ZAI_API_KEY,
+          freeEligible: true,
+          quotaKind: "recurring",
+          dataMayTrain: false,
+          models: [
+            model("glm-4.7-flash", 200_000, 84, 87, 87, 88),
+            model("glm-4.5-flash", 128_000, 80, 91, 84, 84),
+            model("glm-4.6v-flash", 128_000, 83, 86, 83, 85, ["text", "vision", "tools", "json"]),
+          ],
+        }
+      : undefined,
+    env.HF_TOKEN
+      ? {
+          id: "huggingface",
+          label: "Hugging Face Monthly Free Credit",
+          baseUrl: "https://router.huggingface.co/v1",
+          apiKey: env.HF_TOKEN,
+          freeEligible: true,
+          quotaKind: "monthly-credit",
+          dataMayTrain: false,
+          models: [
+            model("deepseek-ai/DeepSeek-V4-Pro", 1_000_000, 96, 68, 97, 98),
+            model("openai/gpt-oss-120b:fastest", 131_072, 88, 88, 91, 92),
+            model("Qwen/Qwen3-Coder-480B-A35B-Instruct", 262_000, 92, 76, 97, 91),
+            model("zai-org/GLM-4.5V", 128_000, 88, 72, 89, 90, ["text", "vision", "tools", "json"]),
+          ],
+        }
+      : undefined,
     env.GEMINI_API_KEY
       ? {
           id: "gemini",
@@ -147,7 +201,27 @@ export function configuredProviders(env: NodeJS.ProcessEnv = process.env): Provi
           ],
         }
       : undefined,
+    env.CUSTOM_API_KEY && env.CUSTOM_BASE_URL && env.CUSTOM_MODELS
+      ? {
+          id: "custom",
+          label: env.CUSTOM_PROVIDER_LABEL?.trim() || "Custom OpenAI-compatible API",
+          baseUrl: normalizeBaseUrl(env.CUSTOM_BASE_URL),
+          apiKey: env.CUSTOM_API_KEY,
+          freeEligible: true,
+          quotaKind: "variable",
+          dataMayTrain: env.CUSTOM_DATA_MAY_TRAIN !== "false",
+          models: env.CUSTOM_MODELS.split(",").map((id) => id.trim()).filter(Boolean).map((id) => model(id, 128_000, 72, 70, 72, 72)),
+        }
+      : undefined,
   ];
 
   return candidates.filter((provider): provider is ProviderSpec => provider !== undefined);
+}
+
+function normalizeBaseUrl(value: string): string {
+  const url = new URL(value.trim());
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(url.hostname))) {
+    throw new Error("Custom provider must use HTTPS (HTTP is allowed only for localhost)");
+  }
+  return url.toString().replace(/\/$/, "");
 }

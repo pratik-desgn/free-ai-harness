@@ -7,7 +7,7 @@ import { LiveCatalog } from "./catalog.js";
 import { anthropicEnvelope, anthropicRequest, responsesEnvelope, responsesRequest } from "./compat.js";
 import { Gateway, NoProviderError } from "./gateway.js";
 import { ensureLocalProvider } from "./local-provider.js";
-import { connectionDefinitions, credentialsEnvironment, validateCredentials } from "./provider-connections.js";
+import { connectionDefinitions, credentialsEnvironment, unavailableServices, validateCredentials } from "./provider-connections.js";
 import { configuredProviders } from "./providers.js";
 import { Store } from "./store.js";
 import { specializedJson, specializedTranscription } from "./specialized.js";
@@ -89,6 +89,7 @@ const server = createServer(async (request, response) => {
         data: [
           { id: "ollama", label: "Local Ollama", description: localProvider.message, connected: active.has("ollama"), managed: true, fields: [], runtime: gateway.runtime.get("ollama") ?? null, catalog: catalog.get("ollama") },
           ...connectionDefinitions.map((definition) => ({ ...definition, connected: active.has(definition.id), fields: definition.fields.map(({ env, label, secret }) => ({ env, label, secret })), runtime: gateway.runtime.get(definition.id) ?? null, catalog: catalog.get(definition.id) })),
+          ...unavailableServices.map((definition) => ({ ...definition, connected: false, unavailable: true, managed: true, fields: [], runtime: null, catalog: null })),
         ],
       });
     }
