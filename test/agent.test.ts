@@ -25,6 +25,7 @@ test("agent continues after a tool call and completes the objective", async () =
           response: new Response(JSON.stringify(payload)),
           candidate: { provider: { id: "mock" }, model: { id: "mock-model" }, score: 1, reasons: [] },
           attempts: [],
+          latencyMs: 1,
         } as unknown as GatewayResult;
       },
     } as unknown as Gateway;

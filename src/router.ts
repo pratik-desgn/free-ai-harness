@@ -43,7 +43,7 @@ export function rankCandidates(
       const taskScore = task === "coding" ? candidateModel.coding : task === "reasoning" ? candidateModel.reasoning : task === "fast" ? candidateModel.speed : candidateModel.quality;
       const latencyPenalty = state?.latencyEwmaMs ? Math.min(15, state.latencyEwmaMs / 1_000) : 0;
       const scarcityPenalty = state?.remainingRequests !== undefined && state.remainingRequests < 10 ? 20 : 0;
-      const score = taskScore + candidateModel.quality * 0.15 + candidateModel.speed * 0.05 - latencyPenalty - scarcityPenalty;
+      const score = taskScore + candidateModel.quality * 0.15 + candidateModel.speed * 0.05 + (state?.qualityAdjustment ?? 0) - latencyPenalty - scarcityPenalty;
       ranked.push({
         provider,
         model: candidateModel,

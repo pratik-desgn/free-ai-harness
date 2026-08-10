@@ -51,6 +51,7 @@ export interface ProviderRuntime {
   latencyEwmaMs?: number;
   remainingTokens?: number;
   remainingRequests?: number;
+  qualityAdjustment?: number;
 }
 
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";

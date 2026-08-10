@@ -17,6 +17,18 @@ const model = (
  */
 export function configuredProviders(env: NodeJS.ProcessEnv = process.env): ProviderSpec[] {
   const candidates: Array<ProviderSpec | undefined> = [
+    env.OLLAMA_ENABLED !== "false"
+      ? {
+          id: "ollama",
+          label: "Local Ollama",
+          baseUrl: env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434/v1",
+          apiKey: "local-only",
+          freeEligible: true,
+          quotaKind: "recurring",
+          dataMayTrain: false,
+          models: [model(env.OLLAMA_MODEL ?? "qwen2.5:3b", 32_768, 70, 45, 75, 68)],
+        }
+      : undefined,
     env.GROQ_API_KEY
       ? {
           id: "groq",

@@ -11,6 +11,7 @@ interface ToolCall {
 
 interface CompletionEnvelope {
   choices?: Array<{ message?: ChatMessage & { tool_calls?: ToolCall[] } }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }
 
 interface Verification {
@@ -52,6 +53,25 @@ export class AgentEngine {
     void this.execute(id).finally(() => this.active.delete(id));
   }
 
+  cancel(id: string): AgentRun | undefined {
+    const run = this.store.getRun(id);
+    if (!run || ["completed", "failed", "cancelled"].includes(run.status)) return run;
+    run.status = "cancelled";
+    this.store.updateRun(run);
+    return run;
+  }
+
+  resume(id: string): AgentRun | undefined {
+    const run = this.store.getRun(id);
+    if (!run || run.status !== "failed") return run;
+    run.status = "queued";
+    run.step = 0;
+    delete run.error;
+    this.store.updateRun(run);
+    this.start(id);
+    return run;
+  }
+
   private async execute(id: string): Promise<void> {
     const run = this.store.getRun(id);
     if (!run || ["completed", "cancelled"].includes(run.status)) return;
@@ -59,16 +79,24 @@ export class AgentEngine {
     this.store.updateRun(run);
 
     try {
+      if (await this.runPreflight(run)) return;
       while (run.step < this.maxSteps) {
+        if (this.store.getRun(id)?.status === "cancelled") return;
         run.step += 1;
         const result = await this.gateway.complete({
           model: "auto",
-          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...run.messages],
-          tools: [...this.toolsByName.values()].map((tool) => tool.definition),
+          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...workflowContext(run.messages)],
+          tools: this.relevantTools(run).map((tool) => tool.definition),
           tool_choice: "auto",
           stream: false,
+          max_tokens: 400,
         });
+        if (this.store.getRun(id)?.status === "cancelled") {
+          await result.response.body?.cancel();
+          return;
+        }
         const envelope = (await result.response.json()) as CompletionEnvelope;
+        this.recordUsage(result, envelope, "agent");
         const message = envelope.choices?.[0]?.message;
         if (!message) throw new Error("Provider returned no assistant message");
         run.messages.push(message);
@@ -98,6 +126,7 @@ export class AgentEngine {
         }
 
         for (const call of calls) {
+          if (this.store.getRun(id)?.status === "cancelled") return;
           const tool = this.toolsByName.get(call.function.name);
           let content: string;
           try {
@@ -117,6 +146,55 @@ export class AgentEngine {
     }
   }
 
+  private async runPreflight(run: AgentRun): Promise<boolean> {
+    const chessSquare = /\b([a-h][1-8])\b/i.exec(run.objective)?.[1];
+    if (chessSquare && /chess|board|square/i.test(run.objective)) {
+      const chess = this.toolsByName.get("chess_square_color");
+      if (chess) {
+        const evidence = await chess.execute(JSON.stringify({ square: chessSquare }));
+        if (!run.events.some((event) => event.metadata?.preflightKind === "chess")) {
+          run.messages.push({ role: "user", content: `Deterministic specialist result:\n${evidence}\nUse this verified result in the final answer.` });
+          this.store.appendEvent(run, { type: "tool", message: `Calculated ${chessSquare.toLowerCase()} square color`, metadata: { preflight: true, preflightKind: "chess", ok: true } });
+        }
+        if (/^\s*(?:search\s+(?:for\s+)?)?(?:which|what)\s+colou?r\b/i.test(run.objective)) {
+          run.status = "completed";
+          run.result = evidence;
+          this.store.appendEvent(run, { type: "completed", message: "Objective completed by deterministic specialist" });
+          return true;
+        }
+      }
+    }
+    if (/\b(search|look up|find online|latest|current news|research)\b/i.test(run.objective) && !run.events.some((event) => event.metadata?.preflightKind === "search")) {
+      const search = this.toolsByName.get("web_search");
+      if (!search) return false;
+      try {
+        const evidence = await search.execute(JSON.stringify({ query: run.objective }));
+        run.messages.push({ role: "user", content: `Harness web-search evidence for the objective:\n${evidence}\nUse this evidence where relevant and continue the task.` });
+        this.store.appendEvent(run, { type: "tool", message: "Gathered web-search evidence", metadata: { preflight: true, preflightKind: "search", ok: true } });
+      } catch (error) {
+        this.store.appendEvent(run, {
+          type: "tool",
+          message: "Web-search preflight was unavailable; continuing with other capabilities",
+          metadata: { preflight: true, preflightKind: "search", ok: false, error: error instanceof Error ? error.message : String(error) },
+        });
+      }
+    }
+    return false;
+  }
+
+  private relevantTools(run: AgentRun): AgentTool[] {
+    const objective = run.objective;
+    const names = new Set<string>();
+    if (/\b(search|look up|find online|latest|current news|research)\b/i.test(objective) && !run.events.some((event) => event.metadata?.preflightKind === "search")) names.add("web_search");
+    if (/https?:\/\/|\b(read|fetch|open)\b.*\b(url|page|website)\b/i.test(objective)) names.add("http_get");
+    if (/\b(time|date|timezone)\b/i.test(objective)) names.add("current_time");
+    if (/\b[a-h][1-8]\b/i.test(objective) && /chess|board|square/i.test(objective) && !run.events.some((event) => event.metadata?.preflightKind === "chess")) names.add("chess_square_color");
+    if (/\b(code|repository|project|file|build|implement|test|debug|typescript|javascript|python)\b/i.test(objective)) {
+      for (const name of ["list_files", "read_file", "write_file", "run_tests"]) names.add(name);
+    }
+    return [...names].map((name) => this.toolsByName.get(name)).filter((tool): tool is AgentTool => tool !== undefined);
+  }
+
   private async verify(objective: string, proposedResult: string): Promise<Verification> {
     const result = await this.gateway.complete({
       model: "auto",
@@ -129,12 +207,54 @@ export class AgentEngine {
       ],
       response_format: { type: "json_object" },
       stream: false,
+      max_tokens: 120,
     });
     const envelope = (await result.response.json()) as CompletionEnvelope;
+    this.recordUsage(result, envelope, "verification");
     const content = envelope.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("Completion verifier returned no result");
     const parsed = JSON.parse(content) as Partial<Verification>;
     if (typeof parsed.complete !== "boolean") throw new Error("Completion verifier returned an invalid verdict");
     return { complete: parsed.complete, feedback: typeof parsed.feedback === "string" ? parsed.feedback : "No feedback supplied" };
   }
+
+  private recordUsage(result: Awaited<ReturnType<Gateway["complete"]>>, envelope: CompletionEnvelope, endpoint: string): void {
+    this.store.recordUsage({
+      providerId: result.candidate.provider.id,
+      modelId: result.candidate.model.id,
+      endpoint,
+      promptTokens: envelope.usage?.prompt_tokens ?? 0,
+      completionTokens: envelope.usage?.completion_tokens ?? 0,
+      totalTokens: envelope.usage?.total_tokens ?? 0,
+      status: result.response.status,
+      latencyMs: result.latencyMs,
+    });
+  }
+}
+
+function workflowContext(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length <= 8) return messages;
+  const selected: ChatMessage[] = [];
+  const firstUser = messages.find((message) => message.role === "user");
+  if (firstUser) selected.push(firstUser);
+
+  const latestByPrefix = (prefix: string): ChatMessage | undefined => [...messages].reverse().find(
+    (message) => message.role === "user" && typeof message.content === "string" && message.content.startsWith(prefix),
+  );
+  for (const prefix of ["Deterministic specialist result:", "Harness web-search evidence", "Completion verifier says"]) {
+    const message = latestByPrefix(prefix);
+    if (message && !selected.includes(message)) selected.push(truncateMessage(message));
+  }
+
+  const lastAssistantIndex = messages.findLastIndex((message) => message.role === "assistant");
+  if (lastAssistantIndex >= 0 && messages.slice(lastAssistantIndex + 1).some((message) => message.role === "tool")) {
+    selected.push(truncateMessage(messages[lastAssistantIndex]!));
+    for (const message of messages.slice(lastAssistantIndex + 1).filter((item) => item.role === "tool")) selected.push(truncateMessage(message));
+  }
+  return selected;
+}
+
+function truncateMessage(message: ChatMessage): ChatMessage {
+  if (typeof message.content !== "string" || message.content.length <= 2_000) return message;
+  return { ...message, content: `${message.content.slice(0, 2_000)}\n[truncated by harness context manager]` };
 }

@@ -3,10 +3,11 @@ const shell = (body: string, script = "") => `<!doctype html>
 <title>Harness</title><style>
 :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui;background:#080b10;color:#edf3f8}*{box-sizing:border-box}
 body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 50% 0,#16253a 0,#080b10 45%)}
-main{width:min(760px,calc(100% - 32px));padding:32px;border:1px solid #273444;border-radius:20px;background:#0d131bcc;box-shadow:0 24px 80px #0008}
+main{width:min(860px,calc(100% - 32px));padding:32px;border:1px solid #273444;border-radius:20px;background:#0d131bcc;box-shadow:0 24px 80px #0008}
 h1{font-size:28px;margin:0 0 8px}.muted{color:#91a3b5;margin:0 0 24px}textarea,input{width:100%;padding:14px 16px;border-radius:12px;border:1px solid #34465a;background:#090e14;color:#fff;font:inherit}
 textarea{min-height:180px;resize:vertical}button{margin-top:12px;padding:12px 18px;border:0;border-radius:12px;background:#48d597;color:#06120d;font-weight:750;cursor:pointer}button:disabled{opacity:.5}
 #status{margin-top:20px;white-space:pre-wrap;line-height:1.5}.event{padding:8px 0;border-bottom:1px solid #1f2a36}.result{margin-top:18px;padding:18px;background:#090e14;border-radius:12px;white-space:pre-wrap}
+.top{display:flex;align-items:start;justify-content:space-between;gap:16px}.ghost{margin:0;background:#1a2531;color:#cbd8e5}.providers{margin-top:32px;border-top:1px solid #273444;padding-top:20px}.provider{border:1px solid #273444;border-radius:12px;padding:14px;margin:10px 0}.provider summary{cursor:pointer;font-weight:650}.provider input{margin-top:10px}.badge{float:right;color:#48d597;font-size:13px}.danger{background:#542330;color:#ffdce4}
 </style></head><body><main>${body}</main><script>${script}</script></body></html>`;
 
 export const loginHtml = shell(`
@@ -19,13 +20,25 @@ document.querySelector('#login').addEventListener('submit',async(e)=>{e.preventD
 `);
 
 export const dashboardHtml = shell(`
-  <h1>What should we accomplish?</h1>
-  <p class="muted">No model picker. The harness plans, routes, uses tools, and continues until the objective is complete.</p>
+  <div class="top"><div><h1>What should we accomplish?</h1>
+  <p class="muted">No model picker. The harness plans, routes, uses tools, and continues until the objective is complete.</p></div><button class="ghost" id="logout">Log out</button></div>
   <form id="run"><textarea id="objective" placeholder="Describe the outcome you want…" required></textarea><button id="start">Start workflow</button></form>
   <div id="status"></div><div id="result"></div>
+  <section class="providers"><h2>Recent workflows</h2><div id="runs">Loading…</div></section>
+  <section class="providers"><h2>Provider capacity</h2><p class="muted">Managed by the harness. Connect once; users never choose or see a model.</p><div id="providers">Loading…</div></section>
+  <section class="providers"><h2>Usage</h2><div id="usage">Loading…</div></section>
 `, `
 const status=document.querySelector('#status'),result=document.querySelector('#result'),button=document.querySelector('#start');
-document.querySelector('#run').addEventListener('submit',async(e)=>{e.preventDefault();button.disabled=true;status.textContent='Creating workflow…';result.textContent='';const response=await fetch('/v1/runs',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({objective:document.querySelector('#objective').value})});const run=await response.json();if(!response.ok){status.textContent=run.error?.message||'Could not start';button.disabled=false;return;}await poll(run.id);});
-async function poll(id){const response=await fetch('/v1/runs/'+id),run=await response.json();status.innerHTML=run.events.map(e=>'<div class="event">'+escapeHtml(e.message)+'</div>').join('');if(run.status==='completed'){result.className='result';result.textContent=run.result;button.disabled=false;return;}if(run.status==='failed'){result.className='result';result.textContent=run.error;button.disabled=false;return;}setTimeout(()=>poll(id),1000);}
+document.querySelector('#logout').addEventListener('click',async()=>{await fetch('/auth/logout',{method:'POST'});location.reload();});
+document.querySelector('#run').addEventListener('submit',async(e)=>{e.preventDefault();button.disabled=true;status.textContent='Creating workflow…';result.textContent='';const response=await fetch('/v1/runs',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({objective:document.querySelector('#objective').value})});const run=await response.json();if(!response.ok){status.textContent=run.error?.message||'Could not start';button.disabled=false;return;}await loadRuns();await poll(run.id);});
+async function poll(id){const response=await fetch('/v1/runs/'+id),run=await response.json();status.innerHTML=run.events.map(e=>'<div class="event">'+escapeHtml(e.message)+'</div>').join('');if(run.status==='completed'){result.className='result';result.textContent=run.result;const feedback=document.createElement('div');feedback.innerHTML='<button class="ghost" data-rating="1">Useful</button> <button class="ghost" data-rating="-1">Needs work</button>';feedback.querySelectorAll('button').forEach(item=>item.addEventListener('click',async()=>{await fetch('/v1/runs/'+id+'/feedback',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({rating:Number(item.dataset.rating)})});feedback.textContent='Feedback saved';}));result.appendChild(feedback);button.disabled=false;return;}if(run.status==='failed'){result.className='result';result.textContent=run.error;button.disabled=false;return;}setTimeout(()=>poll(id),1000);}
 function escapeHtml(value){const node=document.createElement('div');node.textContent=value;return node.innerHTML;}
+async function loadProviders(){const response=await fetch('/v1/providers'),payload=await response.json(),root=document.querySelector('#providers');root.innerHTML=payload.data.map(p=>'<details class="provider"><summary>'+escapeHtml(p.label)+'<span class="badge">'+(p.connected?'Connected':'Not connected')+'</span></summary><p class="muted">'+escapeHtml(p.description)+'</p>'+(p.catalog?'<p class="muted">Health: '+(p.catalog.healthy?'ready':'unavailable')+' · '+p.catalog.availableModels.length+' models discovered</p>':'')+(p.managed?'':providerForm(p))+'</details>').join('');root.querySelectorAll('form').forEach(form=>form.addEventListener('submit',connectProvider));root.querySelectorAll('[data-disconnect]').forEach(item=>item.addEventListener('click',disconnectProvider));}
+function providerForm(p){if(p.connected)return '<button class="danger" type="button" data-disconnect="'+p.id+'">Disconnect</button>';return '<form data-provider="'+p.id+'">'+p.fields.map(f=>'<input name="'+f.env+'" type="'+(f.secret?'password':'text')+'" placeholder="'+escapeHtml(f.label)+'" required autocomplete="off">').join('')+'<button>Connect</button></form>';}
+async function connectProvider(e){e.preventDefault();const form=e.currentTarget,credentials=Object.fromEntries(new FormData(form));const response=await fetch('/v1/providers/'+form.dataset.provider,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({credentials})});if(!response.ok){const body=await response.json();alert(body.error?.message||'Connection failed');return;}await loadProviders();}
+async function disconnectProvider(e){await fetch('/v1/providers/'+e.currentTarget.dataset.disconnect,{method:'DELETE'});await loadProviders();}
+loadProviders();
+async function loadRuns(){const payload=await (await fetch('/v1/runs?limit=10')).json(),root=document.querySelector('#runs');root.innerHTML=payload.data.length?payload.data.map(run=>'<div class="provider" data-run="'+run.id+'"><strong>'+escapeHtml(run.objective.slice(0,90))+'</strong><span class="badge">'+run.status+'</span></div>').join(''):'No workflows yet';root.querySelectorAll('[data-run]').forEach(item=>item.addEventListener('click',()=>poll(item.dataset.run)));}
+async function loadUsage(){const payload=await (await fetch('/v1/usage?days=30')).json(),root=document.querySelector('#usage');root.innerHTML=payload.data.length?payload.data.map(row=>'<div class="provider"><strong>'+escapeHtml(row.provider_id)+'</strong> · '+row.requests+' requests · '+row.total_tokens+' tokens · '+row.average_latency_ms+' ms average</div>').join(''):'No usage recorded yet';}
+loadRuns();loadUsage();
 `);

@@ -1,73 +1,83 @@
 # Free AI Harness
 
-An intelligent, agentic AI service with one user login and no model picker. Provider credentials belong to the harness, which routes every reasoning and tool step to the best currently usable model across legitimate free API tiers.
+A one-login AI gateway with no model picker. The user describes an outcome; the harness selects an eligible model for each step, uses tools, verifies the result, falls back when a provider is exhausted, and persists the workflow across restarts.
 
-This project does **not** create extra accounts, scrape consumer chat products, bypass quotas, or turn subscription allowances into API tokens.
+It uses legitimate provider APIs and local Ollama. It does **not** create accounts, scrape consumer chat products, bypass limits, or convert ChatGPT/Claude subscriptions into API quota. See [PROVIDERS.md](./PROVIDERS.md) for the researched free-tier snapshot.
 
-## What works in the MVP
+## Implemented
 
-- One local endpoint: `POST /v1/chat/completions`
-- A single public model name: `auto`
-- Durable agent workflows through `POST /v1/runs`
-- Automatic continuation after tool calls, with restart-safe run state
-- A browser login and objective-driven workflow screen
-- Streaming and non-streaming responses
-- Capability filtering for vision, tools, and JSON output
-- Provider fallback on throttling and transient errors
-- Quota-header tracking, latency scoring, and short circuit breakers
-- Privacy gate: free tiers that may use prompts for product improvement are disabled by default
-- No provider or model selection exposed to the user
+- One 30-day browser session and optional bearer key for API clients
+- Only one public model name: `auto`
+- OpenAI-compatible chat completions, including streaming
+- Non-streaming OpenAI Responses and Anthropic Messages compatibility
+- Embeddings, image generation, and audio transcription routing
+- Durable agent runs with planning, tool continuation, verification, cancellation, resumption, and restart recovery
+- Automatic task/capability/privacy filtering, adaptive quality feedback, latency and quota scoring, provider fallback, and circuit breakers
+- Encrypted SQLite credential vault and provider connection dashboard
+- Live provider model discovery, health, usage ledger, and exact-response cache
+- Built-in web search, safe HTTP, local workspace file tools, restricted test execution, time, and deterministic chess-square reasoning
+- Private local Ollama fallback that the service starts automatically when installed
 
-Initial adapters: Groq, Gemini, GitHub Models, OpenRouter free models, Cloudflare Workers AI, Mistral, Cerebras, and SambaNova.
+Supported connections: Groq, Gemini, GitHub Models, OpenRouter, Cloudflare Workers AI, Mistral, Cerebras, and SambaNova. The browser never asks the user to select one.
 
-See [PROVIDERS.md](./PROVIDERS.md) for the researched quota snapshot and the important difference between recurring allocations and expiring trial credit.
-
-## Setup
+## Run
 
 ```bash
 cd /home/edith/Projects/free-ai-harness
 npm install
 cp .env.example .env
+openssl rand -hex 32
 ```
 
-Set `HARNESS_LOGIN_PASSWORD`, add service-owned provider keys, then export the file and start:
+Put the generated value in `HARNESS_VAULT_KEY`, set `HARNESS_LOGIN_PASSWORD`, and optionally connect hosted providers in the dashboard. `.env` is loaded automatically:
 
 ```bash
-set -a
-source .env
-set +a
+chmod 600 .env
 npm start
 ```
 
-Point any OpenAI-compatible client at `http://127.0.0.1:8787/v1` and use the value of `HARNESS_API_KEY` as its API key. If `HARNESS_API_KEY` is empty, authentication is disabled; keep the server bound to localhost.
+Open <http://127.0.0.1:8790> and log in once. The included user service can keep it running:
 
 ```bash
-curl http://127.0.0.1:8787/v1/chat/completions \
-  -H "Authorization: Bearer $HARNESS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"auto:coding","messages":[{"role":"user","content":"Write a binary search in TypeScript"}]}'
+mkdir -p ~/.config/systemd/user
+cp deploy/free-ai-harness.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now free-ai-harness.service
 ```
 
-Open `http://127.0.0.1:8790`, log in once, and submit an objective. The 30-day session survives browser restarts. API clients can use the optional machine-to-machine `HARNESS_API_KEY` and must request `model: "auto"`.
+## API
+
+Set `HARNESS_API_KEY` for machine clients, then request only `model: "auto"`:
+
+```bash
+curl http://127.0.0.1:8790/v1/chat/completions \
+  -H "Authorization: Bearer $HARNESS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Write a binary search in TypeScript"}]}'
+```
+
+Primary routes:
+
+| Route | Compatibility |
+|---|---|
+| `POST /v1/chat/completions` | OpenAI, streaming and non-streaming |
+| `POST /v1/responses` | OpenAI Responses, non-streaming |
+| `POST /v1/messages` | Anthropic Messages, non-streaming |
+| `POST /v1/embeddings` | OpenAI embeddings |
+| `POST /v1/images/generations` | OpenAI image shape; Cloudflare native adapter |
+| `POST /v1/audio/transcriptions` | OpenAI multipart transcription; Groq Whisper adapter |
+| `POST /v1/runs` | Persistent autonomous workflow |
 
 ## Honest limits
 
-“Free” is not a single token balance. Vendors enforce different combinations of requests/day, tokens/minute, model-specific capacity, trial credits, and acceptable-use restrictions. A rate limit is a ceiling, not a guaranteed daily grant. The harness therefore treats live responses as authoritative and never promises a collective token number.
+“Free” is not one fungible token balance. Providers enforce different request/day, token/minute, model, trial-credit, and acceptable-use limits. A rate limit is a ceiling, not a promised daily grant. Live model and quota responses are therefore authoritative, and the harness does not promise “one billion free tokens.”
 
-The OpenAI and Anthropic commercial APIs are intentionally not counted as recurring free providers. They can be added later as opt-in paid fallbacks with hard budget caps.
+OpenAI and Anthropic commercial APIs are not treated as recurring free providers. Their consumer subscriptions cannot be reused as API access. Image and hosted audio routes require a compatible connected provider; local Ollama supplies chat and embeddings, not those modalities.
 
-## Next build stages
+## Security
 
-1. Web setup UI with one harness login and provider connection cards.
-2. OS-keychain-backed encrypted credential vault; OAuth where a provider officially supports it, pasted scoped keys elsewhere.
-3. Live model catalog discovery and a signed provider registry so limits can update without a release.
-4. SQLite usage ledger with daily/monthly reset windows and cost-equivalent accounting.
-5. Eval-driven routing trained from the user's own accepted/rejected results, plus semantic cache and local Ollama fallback.
-6. Responses API, embeddings, images, audio, and Anthropic-format compatibility.
-
-## Security defaults for the full product
-
-- Never send the same prompt to multiple providers unless the user enables evaluation mode.
-- Redact secrets before routing and allow provider/data-region deny lists.
-- Use least-privilege provider tokens, encrypted at rest, with no key values in logs.
-- Keep paid fallback off by default and require explicit per-day and per-month caps.
+- Keep the server on localhost unless it is placed behind TLS and access control.
+- Use least-privilege provider keys. They are AES-256-GCM encrypted at rest and never returned by the API.
+- Do not reuse the login password as the vault key in a shared or production installation.
+- Free providers whose policy permits training on prompts remain disabled unless `HARNESS_ALLOW_TRAINING_DATA=true` is explicitly set.
+- Paid fallback is absent by default, so the harness cannot silently spend money.
