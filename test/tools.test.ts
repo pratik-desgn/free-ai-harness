@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { builtInTools, parseSearchResults } from "../src/tools.js";
+import { bestSearchResults, builtInTools, parseSearchResults } from "../src/tools.js";
 
 test("Brave search results are reduced to safe titles, URLs, and snippets", () => {
   const html = `<div class="snippet x" data-pos="1" data-type="web"><a href="https://example.com/current"><div class="title search-snippet-title" title="Market">Market &amp; Today</div></a><div class="generic-snippet"><div class="content desktop-default"><span>10 minutes ago</span><!-- marker --> Index moved higher.</div></div></div>`;
@@ -15,6 +15,13 @@ test("Bing redirect results are decoded into direct evidence URLs", () => {
   const target = Buffer.from("https://example.com/live-market").toString("base64url");
   const html = `<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u=a1${target}&amp;ntb=1">Live Market</a></h2><div><p class="b_lineclamp2">Updated market figures.</p></div></li>`;
   assert.equal(parseSearchResults(html), "1. Live Market\nhttps://example.com/live-market\nUpdated market figures.");
+});
+
+test("search aggregation prefers dated numeric evidence over generic live links", () => {
+  const year = new Date().getUTCFullYear();
+  const generic = "1. Live Market\nhttps://example.com/live\nSee current market updates";
+  const dated = `1. Market closes lower\nhttps://example.com/report\nToday ${year}-08-10: index 2,650.09 fell 4.05 points (-0.15%); turnover Rs. 3.5 billion`;
+  assert.equal(bestSearchResults([generic, dated], "market update today"), dated);
 });
 
 test("workspace tools write and read inside the root but reject traversal", async () => {

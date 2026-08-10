@@ -112,14 +112,17 @@ export function builtInTools(workspaceRoot = resolve("workspace"), options: Buil
           `https://html.duckduckgo.com/html/?q=${encoded}`,
           `https://www.bing.com/search?q=${encoded}&count=8`,
         ];
+        const candidates: string[] = [];
         for (const endpoint of endpoints) {
           try {
             const results = parseSearchResults(await getPublicUrl(endpoint));
-            if (results) return results;
+            if (results) candidates.push(results);
           } catch {
             // Public search frontends occasionally rate-limit automation; try the next independent source.
           }
         }
+        const best = bestSearchResults(candidates, query);
+        if (best) return best;
         throw new Error("Search providers returned no usable results");
       },
     },
@@ -399,6 +402,21 @@ export function parseSearchResults(html: string): string {
     .map((match, index) => `${index + 1}. ${plainText(match[2] ?? "")}\n${bingTarget(match[1] ?? "")}\n${plainText(match[3] ?? "")}`)
     .filter((result) => /\nhttps?:\/\//.test(result));
   return bing.join("\n\n");
+}
+
+export function bestSearchResults(candidates: string[], query: string): string {
+  const currentYear = new Date().getUTCFullYear().toString();
+  const queryTerms = query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
+  const score = (value: string): number => {
+    const lower = value.toLowerCase();
+    const dated = (value.match(new RegExp(`(?:${currentYear}[-/]|${currentYear}\\b)`, "g")) ?? []).length;
+    const numeric = (value.match(/\b\d[\d,]*\.\d+\b/g) ?? []).length;
+    const marketUnits = (value.match(/(?:%|\bpoints?\b|\bturnover\b|\brs\.?\s*\d)/gi) ?? []).length;
+    const recency = (lower.match(/\b(?:today|minutes?|hours?)\s+ago\b/g) ?? []).length;
+    const termMatches = queryTerms.filter((term) => lower.includes(term)).length;
+    return dated * 30 + Math.min(numeric, 20) * 4 + Math.min(marketUnits, 20) * 3 + recency * 6 + termMatches + Math.min((value.match(/^\d+\./gm) ?? []).length, 8);
+  };
+  return [...candidates].sort((left, right) => score(right) - score(left))[0] ?? "";
 }
 
 function bingTarget(value: string): string {
