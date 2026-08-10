@@ -30,8 +30,9 @@ test("Hugging Face monthly credits expose its OpenAI-compatible routed catalog",
 test("a Puter authorization exposes universal user-owned AI capacity", () => {
   const [provider] = configuredProviders({ OLLAMA_ENABLED: "false", PUTER_AUTH_TOKEN: "puter-user-token" });
   assert.equal(provider?.id, "puter");
-  assert.equal(provider?.baseUrl, "https://api.puter.com/puterai/openai/v1");
+  assert.equal(provider?.baseUrl, "https://api.puter.com");
   assert.equal(provider?.modelsUrl, "https://api.puter.com/puterai/chat/models/details");
+  assert.equal(provider?.chatTransport, "puter-driver");
   assert.equal(provider?.apiKey, "puter-user-token");
   assert.equal(provider?.quotaKind, "variable");
   assert.equal(provider?.models[0]?.id, "gpt-5.4-nano");
