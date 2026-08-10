@@ -154,10 +154,11 @@ test("dated numeric updates citing searched URLs complete through deterministic 
     const store = new Store(join(directory, "state.db"));
     let calls = 0;
     const today = new Date().toISOString().slice(0, 10);
+    const writtenToday = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${today}T00:00:00Z`));
     const gateway = {
       async complete(): Promise<GatewayResult> {
         calls += 1;
-        return gatewayResult({ choices: [{ message: { role: "assistant", content: `Market update ${today}: index 2,650.09 (-0.15%). Source: https://example.com/market` } }] });
+        return gatewayResult({ choices: [{ message: { role: "assistant", content: `Market update ${writtenToday}: index 2,650.09 (-0.15%). Source: Example market.` } }] });
       },
     } as unknown as Gateway;
     const search: AgentTool = {

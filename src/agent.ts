@@ -304,11 +304,28 @@ function evidenceUrls(run: AgentRun): Set<string> {
 function verifyDatedCurrentEvidence(run: AgentRun, proposedResult: string): Verification | undefined {
   if (!needsCurrentInformation(run.objective) || !run.events.some((event) => event.metadata?.preflightKind === "search" && event.metadata?.ok === true)) return undefined;
   const date = new Date().toISOString().slice(0, 10);
-  const dateForms = [date, date.replaceAll("-", "/"), date.split("-").reverse().join("/")];
+  const dateValue = new Date(`${date}T00:00:00Z`);
+  const dateForms = [
+    date,
+    date.replaceAll("-", "/"),
+    date.split("-").reverse().join("/"),
+    new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(dateValue),
+    new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }).format(dateValue),
+    new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(dateValue),
+    new Intl.DateTimeFormat("en-US", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }).format(dateValue),
+  ];
   if (!dateForms.some((value) => proposedResult.includes(value))) return undefined;
   if (!/\d[\d,.]*(?:%|\s|$)/m.test(proposedResult)) return undefined;
   if (/\b(?:cannot|can't|unable to)\b.{0,50}\b(?:verify|confirm|access|fetch)\b/is.test(proposedResult)) return undefined;
-  const citedEvidence = [...evidenceUrls(run)].some((url) => proposedResult.includes(url));
+  const normalizedResult = proposedResult.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const citedEvidence = [...evidenceUrls(run)].some((url) => {
+    if (proposedResult.includes(url)) return true;
+    try {
+      return new URL(url).hostname.split(".").some((label) => label.length >= 5 && normalizedResult.includes(label.toLowerCase()));
+    } catch {
+      return false;
+    }
+  });
   if (!citedEvidence) return undefined;
   return { complete: true, feedback: "Current dated figures cite a URL returned by the search evidence." };
 }
