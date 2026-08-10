@@ -14,7 +14,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx --test test/*.test.ts",
     "check:repo": "node scripts/check-repository-safety.mjs",
-    "check": "npm run check:repo && tsc -p tsconfig.json --noEmit && npm test"
+    "check": "npm run check:repo && tsc -p tsconfig.json --noEmit && npm test",
+    "verify:public": "node --env-file-if-exists=.env scripts/verify-public-deployment.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

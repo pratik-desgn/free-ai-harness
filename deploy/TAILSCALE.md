@@ -26,6 +26,12 @@ curl --fail https://machine.tailnet-name.ts.net:10000/health/ready
 
 Verify the public login page, hostile-Origin rejection, Secure/HttpOnly/SameSite cookie flags, an authenticated health request, and one real model call. Funnel is internet-public; normal Tailscale network membership is not required to reach it.
 
+The repository includes a repeatable verifier that reads the ignored local `.env` without printing its secrets:
+
+```bash
+HARNESS_SMOKE_MODEL=true npm run verify:public
+```
+
 To remove only this preview route without disturbing other ports:
 
 ```bash
