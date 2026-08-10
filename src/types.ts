@@ -30,6 +30,7 @@ export interface ProviderSpec {
   id: string;
   label: string;
   baseUrl: string;
+  modelsUrl?: string;
   apiKey?: string;
   freeEligible: boolean;
   quotaKind?: "recurring" | "monthly-credit" | "trial" | "variable";

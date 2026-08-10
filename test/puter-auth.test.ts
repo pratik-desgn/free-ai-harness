@@ -33,6 +33,19 @@ test("rejected Puter credentials do not create an identity", async () => {
   }
 });
 
+test("Puter identity transport failures are reported as temporary upstream failures", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new Error("network unavailable"); }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => verifyPuterToken("x".repeat(40)),
+      (error: unknown) => error instanceof Error && error.message === "Puter is temporarily unavailable" && (error as { status?: number }).status === 502,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Puter tokens are bounded before any network request", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;

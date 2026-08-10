@@ -31,6 +31,7 @@ test("a Puter authorization exposes universal user-owned AI capacity", () => {
   const [provider] = configuredProviders({ OLLAMA_ENABLED: "false", PUTER_AUTH_TOKEN: "puter-user-token" });
   assert.equal(provider?.id, "puter");
   assert.equal(provider?.baseUrl, "https://api.puter.com/puterai/openai/v1");
+  assert.equal(provider?.modelsUrl, "https://api.puter.com/puterai/chat/models/details");
   assert.equal(provider?.apiKey, "puter-user-token");
   assert.equal(provider?.quotaKind, "variable");
   assert.equal(provider?.models[0]?.id, "gpt-5.4-nano");
@@ -66,6 +67,27 @@ test("NVIDIA live discovery adds new chat models but excludes specialized endpoi
     await new LiveCatalog().refreshProvider(provider);
     assert(provider.models.some((model) => model.id === "new-lab/new-reasoning-model"));
     assert(!provider.models.some((model) => model.id === "nvidia/embed-qa"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Puter discovery reads the current public catalog shape", async () => {
+  const [provider] = configuredProviders({ OLLAMA_ENABLED: "false", PUTER_AUTH_TOKEN: "puter-user-token" });
+  assert(provider);
+  const originalFetch = globalThis.fetch;
+  let requested = "";
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    requested = String(input);
+    return Response.json({ models: [{ id: "current-puter-model", puterId: "vendor:current-puter-model", name: "Current Puter Model" }] });
+  }) as typeof fetch;
+  try {
+    const catalog = new LiveCatalog();
+    await catalog.refreshProvider(provider);
+    assert.equal(requested, "https://api.puter.com/puterai/chat/models/details");
+    assert.equal(catalog.get("puter")?.healthy, true);
+    assert.deepEqual(catalog.get("puter")?.availableModels, ["current-puter-model"]);
+    assert(provider.models.some((model) => model.id === "current-puter-model"));
   } finally {
     globalThis.fetch = originalFetch;
   }
