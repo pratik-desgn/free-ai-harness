@@ -17,7 +17,7 @@ import { Store } from "./store.js";
 import { specializedJson, specializedTranscription } from "./specialized.js";
 import { builtInTools } from "./tools.js";
 import type { ChatRequest } from "./types.js";
-import { adminLoginHtml, dashboardHtml, loginHtml } from "./ui.js";
+import { adminLoginHtml, dashboardHtml, loginHtml, privacyHtml, termsHtml } from "./ui.js";
 import { CredentialVault } from "./vault.js";
 
 const port = positiveInteger("HARNESS_PORT", process.env.HARNESS_PORT ?? "8790", 65_535);
@@ -155,6 +155,8 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && url.pathname === "/admin/login") {
       return auth.authorized(request) ? redirect(response, "/") : html(response, 200, adminLoginHtml, false);
     }
+    if (request.method === "GET" && url.pathname === "/privacy") return html(response, 200, privacyHtml, false);
+    if (request.method === "GET" && url.pathname === "/terms") return html(response, 200, termsHtml, false);
     const principal = auth.principal(request);
     if (!principal) {
       return json(response, 401, { error: { message: "Log in to the harness", type: "authentication_error" } });

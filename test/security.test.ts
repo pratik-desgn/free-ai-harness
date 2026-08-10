@@ -42,5 +42,6 @@ test("security headers disable framing, sniffing, sensitive referrers, and HTML 
   assert.equal(headers.get("x-frame-options"), "DENY");
   assert.equal(headers.get("referrer-policy"), "no-referrer");
   assert.equal(headers.get("cross-origin-resource-policy"), "same-origin");
+  assert.equal(headers.get("x-robots-tag"), "noindex, nofollow");
   assert.equal(headers.get("cache-control"), "no-store");
 });

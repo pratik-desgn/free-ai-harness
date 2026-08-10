@@ -80,8 +80,16 @@ test("spawned production server exposes health, authentication, origin, cookie, 
     assert.equal(root.status, 200);
     assert.match(csp, /script-src 'nonce-[A-Za-z0-9_-]+'/);
     assert.doesNotMatch(csp, /unsafe-inline/);
+    assert.equal(root.headers.get("x-robots-tag"), "noindex, nofollow");
     assert.match(html, /<script nonce="[A-Za-z0-9_-]+">/);
     assert.equal((await fetch(`${origin}/v1/models`)).status, 401);
+
+    const privacy = await fetch(`${origin}/privacy`);
+    const terms = await fetch(`${origin}/terms`);
+    assert.equal(privacy.status, 200);
+    assert.match(await privacy.text(), /self-hosted AI gateway/);
+    assert.equal(terms.status, 200);
+    assert.match(await terms.text(), /Terms and acceptable use/);
 
     const admin = await fetch(`${origin}/admin/login`);
     const adminHtml = await admin.text();
