@@ -114,13 +114,15 @@ test("current-information workflows reject invented URLs and synthesize after th
     let fetchExecutions = 0;
     const toolCall = (id: string, url: string) => ({ choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "http_get", arguments: JSON.stringify({ url }) } }] } }] });
     const gateway = {
-      async complete(request: { tools?: Array<{ function: { name: string } }> }): Promise<GatewayResult> {
+      async complete(request: { tools?: Array<{ function: { name: string } }>; messages: Array<{ content?: unknown }> }): Promise<GatewayResult> {
         calls += 1;
         if (calls === 1) return gatewayResult(toolCall("invented", "https://invented.example/today"));
         if (calls === 2) return gatewayResult(toolCall("allowed-1", "https://example.com/market"));
         if (calls === 3) return gatewayResult(toolCall("allowed-2", "https://example.com/market"));
         if (calls === 4) {
           assert.deepEqual(request.tools, []);
+          assert(request.messages.some((message) => typeof message.content === "string" && message.content.includes("UNTRUSTED WEB-SEARCH EVIDENCE")));
+          assert(request.messages.some((message) => typeof message.content === "string" && message.content.includes("three-page evidence budget")));
           return gatewayResult({ choices: [{ message: { role: "assistant", content: "Synthesized from bounded evidence." } }] });
         }
         return gatewayResult({ choices: [{ message: { role: "assistant", content: JSON.stringify({ complete: true, feedback: "Bounded evidence used" }) } }] });

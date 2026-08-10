@@ -130,12 +130,14 @@ export class AgentEngine {
           continue;
         }
 
+        let evidenceBudgetReached = false;
         for (const call of calls) {
           if (this.store.getRun(id, this.userId)?.status === "cancelled") return;
           const tool = this.toolsByName.get(call.function.name);
           let content: string;
           try {
             if (call.function.name === "http_get" && needsCurrentInformation(run.objective)) {
+              if (toolExecutionCount(run, "http_get") >= 3) throw new Error("The three-page evidence budget is exhausted");
               const requestedUrl = requestedToolUrl(call.function.arguments);
               if (!requestedUrl || !evidenceUrls(run).has(requestedUrl)) throw new Error("Use an exact URL from the web-search evidence; do not invent paths");
             }
@@ -145,10 +147,9 @@ export class AgentEngine {
           }
           run.messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content });
           this.store.appendEvent(run, { type: "tool", message: `Executed ${call.function.name}`, metadata: { ok: !content.startsWith("Error:") } });
-          if (call.function.name === "http_get" && toolExecutionCount(run, "http_get") >= 3) {
-            run.messages.push({ role: "user", content: "The three-page evidence budget is exhausted. Do not request more tools. Synthesize the best accurate answer now from the search snippets and page evidence already in the transcript; clearly qualify anything the evidence does not establish." });
-          }
+          if (call.function.name === "http_get" && toolExecutionCount(run, "http_get") >= 3) evidenceBudgetReached = true;
         }
+        if (evidenceBudgetReached) run.messages.push({ role: "user", content: "The three-page evidence budget is exhausted. Do not request more tools. Synthesize the best accurate answer now from the search snippets and page evidence already in the transcript; clearly qualify anything the evidence does not establish." });
       }
       throw new Error(`Workflow reached the ${this.maxSteps}-step safety limit`);
     } catch (error) {
@@ -308,7 +309,7 @@ function workflowContext(messages: ChatMessage[]): ChatMessage[] {
   const latestByPrefix = (prefix: string): ChatMessage | undefined => [...messages].reverse().find(
     (message) => message.role === "user" && typeof message.content === "string" && message.content.startsWith(prefix),
   );
-  for (const prefix of ["Deterministic specialist result:", "Harness web-search evidence", "Completion verifier says"]) {
+  for (const prefix of ["Deterministic specialist result:", "UNTRUSTED WEB-SEARCH EVIDENCE", "The three-page evidence budget", "Completion verifier says"]) {
     const message = latestByPrefix(prefix);
     if (message && !selected.includes(message)) selected.push(truncateMessage(message));
   }
