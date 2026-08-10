@@ -16,6 +16,7 @@ export const loginHtml = shell(`
   <p class="muted">Authorize once. The harness chooses from hundreds of models, manages capacity, and completes the workflow.</p>
   <button class="primary" id="puter-login">Continue with Universal AI</button>
   <p class="muted">Uses your Puter allowance. In free-only mode the harness checks it and blocks once Puter reports it exhausted; Puter's own billing controls remain authoritative. Requests follow Puter and the selected model provider's privacy terms.</p>
+  <p class="admin">By continuing you accept the <a href="/terms">terms</a> and acknowledge the <a href="/privacy">privacy notice</a>.</p>
   <p class="admin"><a href="/admin/login">Administrator access</a></p>
   <div id="status"></div>
 `, `
@@ -29,6 +30,23 @@ export const adminLoginHtml = shell(`
   <p class="admin"><a href="/">Back to user sign-in</a></p><div id="status"></div>
 `, `
 document.querySelector('#login').addEventListener('submit',async(e)=>{e.preventDefault();const status=document.querySelector('#status');status.textContent='Signing in…';const response=await fetch('/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.querySelector('#password').value})});if(response.ok)location.href='/';else status.textContent='Login failed';});
+`);
+
+export const privacyHtml = shell(`
+  <h1>Privacy</h1>
+  <p class="muted">This is a self-hosted AI gateway. The operator of this instance controls the data stored here; the open-source project does not receive it automatically.</p>
+  <h2>What this instance stores</h2><p>It may retain an opaque Puter identity, encrypted provider authorization, session hashes, workflows and model responses, tool events, feedback, usage measurements, and files deliberately created in your isolated workspace.</p>
+  <h2>Where requests go</h2><p>Your prompt is sent to Puter or the automatically selected provider to fulfill the request and is governed by that provider's terms. Provider credentials are encrypted at rest and are not returned by the API.</p>
+  <h2>Retention and control</h2><p>Completed history is retained for the configured period, 30 days by default. You can export the documented retained summary, disconnect Puter, or delete your live account and workspace. Existing encrypted backups remain until the instance operator's backup-retention window expires.</p>
+  <p class="admin"><a href="/">Back</a> · <a href="https://github.com/pratik-desgn/free-ai-harness/blob/master/PRIVACY.md" rel="noreferrer">Full privacy notice</a></p>
+`);
+
+export const termsHtml = shell(`
+  <h1>Terms and acceptable use</h1>
+  <p class="muted">This instance and its models are provided without a guarantee of availability, output quality, or free quota.</p>
+  <p>Follow applicable law and every selected provider's terms. Do not automate account creation, share credentials, bypass quotas or billing, access systems without authorization, harm other users, or submit sensitive data unless this instance and its providers are approved for it.</p>
+  <p>Providers independently control allowance, pricing, privacy, and suspension. Puter billing controls are authoritative; harness limits are safety rails, not billing guarantees.</p>
+  <p class="admin"><a href="/">Back</a> · <a href="https://github.com/pratik-desgn/free-ai-harness/blob/master/TERMS.md" rel="noreferrer">Full terms</a></p>
 `);
 
 export const dashboardHtml = shell(`

@@ -56,6 +56,7 @@ export function applySecurityHeaders(response: ServerResponse, contentType?: str
   response.setHeader("referrer-policy", "no-referrer");
   response.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()");
   response.setHeader("cross-origin-resource-policy", "same-origin");
+  response.setHeader("x-robots-tag", "noindex, nofollow");
   if (secure) response.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
   if (contentType?.includes("text/html")) response.setHeader("cache-control", "no-store");
 }

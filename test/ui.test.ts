@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { adminLoginHtml, dashboardHtml, loginHtml } from "../src/ui.js";
+import { adminLoginHtml, dashboardHtml, loginHtml, privacyHtml, termsHtml } from "../src/ui.js";
 
 test("user login offers one universal authorization without exposing administrator credentials", () => {
   assert.match(loginHtml, /Continue with Universal AI/);
@@ -8,6 +8,8 @@ test("user login offers one universal authorization without exposing administrat
   assert.match(loginHtml, /\/auth\/puter/);
   assert.doesNotMatch(loginHtml, /id="password"/);
   assert.doesNotMatch(loginHtml, /\/auth\/login/);
+  assert.match(loginHtml, /href="\/privacy"/);
+  assert.match(loginHtml, /href="\/terms"/);
 });
 
 test("administrator login is isolated from Puter and uses a password form", () => {
@@ -24,4 +26,12 @@ test("dashboard exposes automatic routing and account controls without a model p
   assert.match(dashboardHtml, /Disconnect Universal AI/);
   assert.match(dashboardHtml, /Delete account/);
   assert.doesNotMatch(dashboardHtml, /<select\b/i);
+});
+
+test("public legal pages disclose self-hosting, retention, provider, and billing boundaries", () => {
+  assert.match(privacyHtml, /self-hosted AI gateway/);
+  assert.match(privacyHtml, /encrypted backups remain/i);
+  assert.match(privacyHtml, /automatically selected provider/);
+  assert.match(termsHtml, /Do not automate account creation/);
+  assert.match(termsHtml, /billing guarantees/);
 });

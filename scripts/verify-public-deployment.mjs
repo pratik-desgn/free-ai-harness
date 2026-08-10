@@ -12,6 +12,11 @@ const csp = root.headers.get("content-security-policy") ?? "";
 assert(root.ok && rootHtml.includes("Continue with Universal AI"), "user login page is unavailable");
 assert(rootHtml.includes("https://js.puter.com/v2/"), "user login page does not load the expected Puter SDK");
 assert(/script-src 'nonce-[A-Za-z0-9_-]+'/.test(csp) && !csp.includes("unsafe-inline"), "user CSP is not nonce-restricted");
+assert(root.headers.get("x-robots-tag") === "noindex, nofollow", "application pages are indexable");
+
+const [privacy, terms] = await Promise.all([fetch(`${origin}/privacy`), fetch(`${origin}/terms`)]);
+assert(privacy.ok && (await privacy.text()).includes("self-hosted AI gateway"), "privacy notice is unavailable");
+assert(terms.ok && (await terms.text()).includes("Terms and acceptable use"), "acceptable-use terms are unavailable");
 
 const admin = await fetch(`${origin}/admin/login`);
 const adminHtml = await admin.text();
@@ -58,6 +63,8 @@ console.log(JSON.stringify({
   origin,
   ready: true,
   csp: true,
+  legalNotices: true,
+  noIndex: true,
   adminIsolation: true,
   originDefense: true,
   secureSession: true,
