@@ -20,7 +20,7 @@ test("agent continues after a tool call and completes the objective", async () =
           ? { choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "test_tool", arguments: "{}" } }] } }] }
           : calls === 2
             ? { choices: [{ message: { role: "assistant", content: "Finished with evidence." } }] }
-            : { choices: [{ message: { role: "assistant", content: JSON.stringify({ complete: true, feedback: "All requirements met" }) } }] };
+            : { choices: [{ message: { role: "assistant", content: '```json\n{"complete":true,"feedback":"All requirements met"}\n```' } }] };
         return {
           response: new Response(JSON.stringify(payload)),
           candidate: { provider: { id: "mock" }, model: { id: "mock-model" }, score: 1, reasons: [] },
