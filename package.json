@@ -18,7 +18,7 @@
     "verify:public": "node --env-file-if-exists=.env scripts/verify-public-deployment.mjs"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.1.2",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }
