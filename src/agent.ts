@@ -218,7 +218,7 @@ export class AgentEngine {
       messages: [
         {
           role: "system",
-          content: "Act as a strict completion verifier. Decide whether the proposed result fully satisfies the objective with supported evidence. Return one JSON object only: {\"complete\":boolean,\"feedback\":string}. Keep feedback under 30 words.",
+          content: "Act as a strict but scope-faithful completion verifier. Decide whether the proposed result usefully satisfies the stated objective with supported evidence. Do not invent requirements the user did not state. For broad current-information questions, an evidence-backed update with honest, specific limitations can be complete even if every possible metric is unavailable. Return one JSON object only: {\"complete\":boolean,\"feedback\":string}. Keep feedback under 30 words.",
         },
         { role: "user", content: `OBJECTIVE:\n${objective}\n\nPROPOSED RESULT:\n${proposedResult}` },
       ],

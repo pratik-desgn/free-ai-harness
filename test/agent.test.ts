@@ -82,6 +82,7 @@ test("today and market objectives search first and expose page fetching for evid
           assert(request.messages.some((message) => typeof message.content === "string" && message.content.includes("UNTRUSTED WEB-SEARCH EVIDENCE")));
           return gatewayResult({ choices: [{ message: { role: "assistant", content: "Today's verified market update." } }] });
         }
+        assert(request.messages.some((message) => typeof message.content === "string" && message.content.includes("Do not invent requirements")));
         return gatewayResult({ choices: [{ message: { role: "assistant", content: JSON.stringify({ complete: true, feedback: "Current evidence included" }) } }] });
       },
     } as unknown as Gateway;
