@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync, renameSync, rmSync } from "node:fs";
+import { closeSync, createWriteStream, existsSync, fsyncSync, openSync, renameSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync, backup } from "node:sqlite";
 
@@ -24,17 +24,22 @@ try {
   let previousPath;
   if (existsSync(databasePath)) {
     previousPath = `${databasePath}.before-restore-${timestamp}`;
-    const current = new DatabaseSync(databasePath, { readOnly: true });
+    const current = new DatabaseSync(databasePath);
     try {
+      current.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       await backup(current, previousPath);
     } finally {
       current.close();
     }
   }
+  const incomingFd = openSync(incomingPath, "r");
+  try { fsyncSync(incomingFd); } finally { closeSync(incomingFd); }
   for (const suffix of ["-wal", "-shm"]) rmSync(`${databasePath}${suffix}`, { force: true });
   // On the Linux production target rename replaces the directory entry atomically,
   // so readers never observe a missing database between removal and installation.
   renameSync(incomingPath, databasePath);
+  const directoryFd = openSync(dataDirectory, "r");
+  try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
   console.error(previousPath ? `restore complete; previous database snapshot retained at ${previousPath}` : "restore complete");
 } catch (error) {
   rmSync(incomingPath, { force: true });

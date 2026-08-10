@@ -40,7 +40,7 @@ export const dashboardHtml = shell(`
   <section class="providers"><h2>Recent workflows</h2><div id="runs">Loading…</div></section>
   <section class="providers"><h2>AI capacity</h2><p class="muted">Your available models are combined into one automatic pool.</p><div id="providers">Loading…</div></section>
   <section class="providers"><h2>Usage</h2><div id="usage">Loading…</div></section>
-  <section class="providers" id="account"><h2>Your data</h2><p class="muted">Export your history, disconnect AI access, or permanently delete your harness account.</p><a href="/v1/account/export">Export data</a><br><button class="ghost" id="disconnect-puter">Disconnect Universal AI</button> <button class="danger" id="delete-account">Delete account</button></section>
+  <section class="providers" id="account"><h2>Your data</h2><p class="muted">Export up to 200 recent retained workflows plus an aggregate usage summary, disconnect AI access, or permanently delete your harness account and workspace.</p><a href="/v1/account/export">Export retained summary</a><br><button class="ghost" id="disconnect-puter">Disconnect Universal AI</button> <button class="danger" id="delete-account">Delete account</button></section>
 `, `
 const status=document.querySelector('#status'),result=document.querySelector('#result'),button=document.querySelector('#start');
 async function loadMe(){const me=await (await fetch('/auth/me')).json();if(me.user?.displayName&&me.user.displayName!=='Administrator')document.querySelector('#welcome').textContent='What should we accomplish, '+me.user.displayName+'?';if(me.user?.provider==='operator')document.querySelector('#account').hidden=true;}

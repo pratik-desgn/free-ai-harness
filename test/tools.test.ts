@@ -95,3 +95,20 @@ test("network tools reject IPv4-mapped IPv6 loopback literals", async () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("network tools reject the full IPv6 link-local, site-local, and multicast ranges", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-tool-ipv6-ranges-"));
+  try {
+    const httpGet = builtInTools(directory).find((tool) => tool.definition.function.name === "http_get");
+    assert.ok(httpGet);
+    for (const address of ["fe90::1", "fec0::1", "ff02::1"]) {
+      await assert.rejects(
+        () => httpGet.execute(JSON.stringify({ url: `http://[${address}]/private` })),
+        /Private or local network targets are blocked/,
+        address,
+      );
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

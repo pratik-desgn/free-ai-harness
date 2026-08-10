@@ -11,8 +11,11 @@ RemainAfterExit=yes
 WorkingDirectory=/opt/free-ai-harness
 EnvironmentFile=/opt/free-ai-harness/deploy/.env
 ExecStartPre=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml config --quiet
-ExecStart=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --remove-orphans
-ExecReload=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --remove-orphans
+ExecStartPre=/usr/bin/env REQUIRE_IMMUTABLE_IMAGES=true /usr/bin/node /opt/free-ai-harness/scripts/validate-deployment.mjs /opt/free-ai-harness/deploy/.env
+ExecStartPre=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
+ExecStart=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --no-build --remove-orphans
+ExecReload=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
+ExecReload=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --no-build --remove-orphans
 ExecStop=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml down
 TimeoutStartSec=0
 TimeoutStopSec=60

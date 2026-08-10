@@ -4,12 +4,17 @@
   "private": true,
   "type": "module",
   "description": "A quota-aware, OpenAI-compatible router for legitimate free AI provider tiers.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "node --env-file-if-exists=.env --import tsx --watch src/server.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/server.ts",
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx --test test/*.test.ts",
-    "check": "tsc -p tsconfig.json --noEmit && npm test"
+    "check:repo": "node scripts/check-repository-safety.mjs",
+    "check": "npm run check:repo && tsc -p tsconfig.json --noEmit && npm test"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

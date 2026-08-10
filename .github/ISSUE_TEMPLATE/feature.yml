@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a focused, legitimate capability.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What outcome cannot be achieved today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include effects on automatic routing and the one-login experience.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Security, privacy, quota, and provider-policy considerations
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This does not require account automation, credential sharing, consumer-site scraping, or quota bypasses.
+          required: true

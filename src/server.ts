@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { rm } from "node:fs/promises";
+import { rename, rm } from "node:fs/promises";
 import { Readable, Transform } from "node:stream";
 import { AgentEngine } from "./agent.js";
 import { Auth } from "./auth.js";
@@ -40,6 +40,8 @@ const maxOutputTokens = positiveInteger("HARNESS_MAX_OUTPUT_TOKENS", process.env
 const dailyTokenBudget = positiveInteger("HARNESS_DAILY_TOKEN_BUDGET", process.env.HARNESS_DAILY_TOKEN_BUDGET ?? "5000000", 1_000_000_000);
 const maxUpstreamResponseBytes = positiveInteger("HARNESS_MAX_UPSTREAM_RESPONSE_BYTES", process.env.HARNESS_MAX_UPSTREAM_RESPONSE_BYTES ?? "16777216", 100 * 1024 * 1024);
 const rateLimiter = new RateLimiter();
+const deletingUsers = new Set<string>();
+const activeInferenceRequests = new Map<string, number>();
 let shuttingDown = false;
 process.umask(0o077);
 validateProductionConfiguration();
@@ -133,6 +135,9 @@ const server = createServer(async (request, response) => {
       const body = await readJson<{ token?: string; displayName?: string }>(request);
       if (!body.token) return invalid(response, "Puter authorization is required");
       const identity = await verifyPuterToken(body.token, body.displayName);
+      // A fresh upstream authorization is a credential rotation. Revoke every
+      // older harness cookie before installing the replacement credential.
+      store.deleteSessionsForUser(identity.id);
       store.upsertUser({ id: identity.id, provider: "puter", externalId: identity.externalId, displayName: identity.displayName });
       store.recordConsent(identity.id, "puter-broker-privacy-and-billing", "2026-08-10");
       vault.setForUser(identity.id, "puter", { PUTER_AUTH_TOKEN: body.token.trim() });
@@ -154,6 +159,8 @@ const server = createServer(async (request, response) => {
     if (!principal) {
       return json(response, 401, { error: { message: "Log in to the harness", type: "authentication_error" } });
     }
+    if (deletingUsers.has(principal.id)) return json(response, 409, { error: { message: "Account deletion is in progress", type: "conflict" } });
+    if (isInferencePath(url.pathname)) trackInferenceRequest(principal.id, response);
     if (url.pathname.startsWith("/v1/") && !takeRateLimit(response, `api:${principal.id}`, requestsPerMinute, 60_000)) return;
     if (isInferencePath(url.pathname) && store.tokensUsedSince(principal.id, new Date(Date.now() - 86_400_000).toISOString()) >= dailyTokenBudget) {
       return json(response, 429, { error: { message: "Daily token safety budget is exhausted", type: "rate_limit_error" } });
@@ -178,6 +185,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "DELETE" && url.pathname === "/v1/user-providers/puter") {
       if (principal.provider !== "puter") return json(response, 403, { error: { message: "No user-owned Puter connection", type: "forbidden" } });
       if (store.activeRunCount(principal.id) > 0) return json(response, 409, { error: { message: "Finish or cancel active workflows before disconnecting", type: "conflict" } });
+      store.deleteSessionsForUser(principal.id);
       vault.deleteForUser(principal.id, "puter");
       runtimes.delete(principal.id);
       auth.logout(request, response);
@@ -188,11 +196,33 @@ const server = createServer(async (request, response) => {
       const body = await readJson<{ confirmation?: string }>(request);
       if (body.confirmation !== "DELETE") return invalid(response, "confirmation must equal DELETE");
       if (store.activeRunCount(principal.id) > 0) return json(response, 409, { error: { message: "Finish or cancel active workflows before deleting the account", type: "conflict" } });
-      store.deleteUserAccount(principal.id);
-      runtimes.delete(principal.id);
-      await rm(userWorkspaceRoot(principal.id), { recursive: true, force: true });
-      auth.logout(request, response);
-      return json(response, 200, { ok: true });
+      if ((activeInferenceRequests.get(principal.id) ?? 0) > 0) return json(response, 409, { error: { message: "Wait for active model requests to finish before deleting the account", type: "conflict" } });
+      deletingUsers.add(principal.id);
+      const workspace = userWorkspaceRoot(principal.id);
+      const tombstone = `${workspace}.deleting-${randomUUID()}`;
+      let movedWorkspace = false;
+      try {
+        try {
+          await rename(workspace, tombstone);
+          movedWorkspace = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (movedWorkspace) {
+          try {
+            await rm(tombstone, { recursive: true, force: true });
+          } catch (error) {
+            try { await rename(tombstone, workspace); } catch {}
+            throw error;
+          }
+        }
+        store.deleteUserAccount(principal.id);
+        runtimes.delete(principal.id);
+        auth.logout(request, response);
+        return json(response, 200, { ok: true });
+      } finally {
+        deletingUsers.delete(principal.id);
+      }
     }
     const runtime = runtimeFor(principal.id);
     if (request.method === "GET" && url.pathname === "/auth/me") {
@@ -385,7 +415,9 @@ function runtimeFor(userId: string): UserRuntime {
     requestTimeoutMs,
     {
       cacheGet: (key) => store.cacheGet(`${userId}:${key}`),
-      cacheSet: (key, value, ttlMs) => store.cacheSet(`${userId}:${key}`, value, ttlMs),
+      cacheSet: (key, value, ttlMs) => {
+        if (store.getUser(userId)) store.cacheSet(`${userId}:${key}`, value, ttlMs);
+      },
     },
     cacheTtlMs,
   );
@@ -453,6 +485,20 @@ function pruneHistoricalData(): void {
   store.pruneHistoricalData(before);
 }
 
+function trackInferenceRequest(userId: string, response: ServerResponse): void {
+  activeInferenceRequests.set(userId, (activeInferenceRequests.get(userId) ?? 0) + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const remaining = (activeInferenceRequests.get(userId) ?? 1) - 1;
+    if (remaining > 0) activeInferenceRequests.set(userId, remaining);
+    else activeInferenceRequests.delete(userId);
+  };
+  response.once("finish", release);
+  response.once("close", release);
+}
+
 applyFeedbackAdjustments();
 
 async function recordDirectUsage(response: Response, providerId: string, modelId: string, latencyMs: number, cacheHit: boolean, targetStore: Store, userId: string): Promise<void> {
@@ -471,6 +517,7 @@ async function recordDirectUsage(response: Response, providerId: string, modelId
         } catch {}
       }
     } else return;
+    if (userId !== "operator" && !targetStore.getUser(userId)) return;
     targetStore.recordUsage({
       providerId, modelId, endpoint: cacheHit ? "chat:cache" : "chat", status: response.status, latencyMs,
       promptTokens: cacheHit ? 0 : usage?.prompt_tokens ?? 0,

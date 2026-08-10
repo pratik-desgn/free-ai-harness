@@ -5,6 +5,7 @@ The supported production layout is Caddy (public TLS) -> the harness on a privat
 ## Prerequisites
 
 - A Linux host with Docker Engine and Docker Compose v2
+- Node.js 24 for deployment validation and dependency SBOM generation
 - A DNS A/AAAA record for the chosen hostname pointing to the host
 - Inbound TCP 80 and TCP/UDP 443 allowed through the firewall
 - At least 2 CPU cores, 2 GiB RAM, and enough disk for workspace artifacts
@@ -28,10 +29,13 @@ Compose interpolation and the container `env_file` are separate. The example int
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml config --quiet
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml build --pull
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
+REQUIRE_IMMUTABLE_IMAGES=true node scripts/validate-deployment.mjs deploy/.env
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --no-build
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
 ```
+
+These commands require digest-pinned `HARNESS_IMAGE`, `CADDY_IMAGE`, and `NODE_IMAGE` values produced by the release process. For a local source evaluation only, run `node scripts/validate-deployment.mjs deploy/.env` followed by `docker compose ... build --pull`; do not use that mutable build path for production.
 
 Verify `https://$HARNESS_DOMAIN/`, log in, and perform one real model request. Container health proves the process and database readiness path; it does not prove authentication or that a third-party provider has remaining quota.
 
@@ -68,11 +72,12 @@ Back up before every upgrade:
 
 ```bash
 ./scripts/backup.sh /secure/backups/harness-before-upgrade.db
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml build --pull
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
+REQUIRE_IMMUTABLE_IMAGES=true node scripts/validate-deployment.mjs deploy/.env
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --no-build
 ```
 
-Pin `HARNESS_IMAGE` to an immutable version or digest in a real release pipeline. Review migrations and test restoration in staging before production upgrades. To roll back application code, restore the previous image tag. Restore the database only when the schema/data must also be rolled back.
+Production releases must pin `HARNESS_IMAGE`, `CADDY_IMAGE`, and the build-time `NODE_IMAGE` by digest. See [RELEASE.md](./RELEASE.md) for the reproducible build, SBOM, attestation, and immutable deployment gates. Review migrations and test restoration in staging before production upgrades. To roll back application code, restore the previous image digest. Restore the database only when the schema/data must also be rolled back.
 
 ## Backup and restore
 
@@ -84,6 +89,8 @@ chmod +x scripts/backup.sh scripts/restore.sh
 ```
 
 Encrypt backups at rest and copy them off-host. Retain the exact `HARNESS_VAULT_KEY` in a separate secret manager; losing it makes encrypted provider credentials unrecoverable. A useful baseline is daily backups retained for 7 days, weekly backups for 5 weeks, and a quarterly restore drill.
+
+Deleting an account removes its live database records and managed workspace, but cannot rewrite already-created backups. Document the backup-retention window in the service privacy notice, restrict backup access, and let expired backups age out on schedule.
 
 Both helpers read `deploy/.env` by default. Set `HARNESS_COMPOSE_ENV_FILE=/absolute/path/to/env` when the production Compose environment is stored elsewhere; the helpers also force Compose to use that same file for the application environment.
 

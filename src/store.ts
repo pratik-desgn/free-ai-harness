@@ -226,6 +226,7 @@ export class Store {
     providerId: string; modelId: string; endpoint: string; promptTokens?: number; completionTokens?: number;
     totalTokens?: number; status: number; latencyMs: number; userId?: string;
   }): void {
+    if (event.userId && event.userId !== "operator" && !this.getUser(event.userId)) return;
     this.database.prepare(`
       INSERT INTO usage_events(user_id, provider_id, model_id, endpoint, prompt_tokens, completion_tokens, total_tokens, status, latency_ms, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

@@ -1,5 +1,7 @@
 # Free AI Harness
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
 A one-login AI gateway with no model picker. The user describes an outcome; the harness selects an eligible model for each step, uses tools, verifies the result, falls back when a provider is exhausted, and persists the workflow across restarts.
 
 It uses legitimate provider APIs and local Ollama. It does **not** create accounts, scrape consumer chat products, bypass limits, or convert ChatGPT/Claude subscriptions into API quota. See [PROVIDERS.md](./PROVIDERS.md) for the researched free-tier snapshot.
@@ -89,5 +91,9 @@ Likewise, website-only consumer credits are not scraped. Higgsfield currently ha
 - Direct free providers whose policy permits training on prompts remain disabled unless `HARNESS_ALLOW_TRAINING_DATA=true` is explicitly set. Puter is a user-authorized broker across upstream providers with differing privacy terms; its disclosure is shown before authorization.
 - Direct paid-provider fallback is absent by default. Puter is user-pays: the harness checks the reported allowance in free-only mode and blocks once exhausted, while Puter's own billing controls remain authoritative.
 - Per-user request, output-token, rolling usage, workspace, and concurrent-run ceilings limit accidental or abusive consumption. The rolling token ceiling depends on upstream usage reporting and is a safety rail, not a billing guarantee.
-- User workspaces are isolated. Production disables in-process code execution; network and file tools can be disabled independently. Stored runs and usage are retained for 30 days by default, and users can export or delete their account data from the dashboard.
+- User workspaces are isolated. Production disables in-process code execution; network and file tools can be disabled independently. Stored runs and usage are retained for 30 days by default. Users can export a retained workflow/usage summary or permanently delete their harness account and workspace from the dashboard.
 - Rate limits and runtime coordination are process-local. A multi-replica deployment needs a shared limiter and run coordinator before scaling horizontally.
+
+## Open-source project
+
+Free AI Harness is MIT-licensed. Contributions are welcome; read [CONTRIBUTING.md](./CONTRIBUTING.md), [SECURITY.md](./SECURITY.md), and the [code of conduct](./CODE_OF_CONDUCT.md) before participating. Never commit `.env`, provider credentials, databases, backups, user workspaces, or logs. CI runs the same repository-safety scan, typecheck, test suite, dependency audit, production build, and container build expected for releases.

@@ -5,11 +5,17 @@ import { mkdirSync } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, realpath } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const nonPublicIpv6 = new BlockList();
+for (const [network, prefix] of [
+  ["::", 128], ["::1", 128], ["100::", 64], ["2001:2::", 48], ["2001:10::", 28],
+  ["2001:db8::", 32], ["2001:20::", 28], ["2002::", 16], ["3fff::", 20],
+  ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8],
+] as Array<[string, number]>) nonPublicIpv6.addSubnet(network, prefix, "ipv6");
 
 export interface AgentTool {
   definition: {
@@ -327,12 +333,13 @@ async function pinnedGet(url: URL, target: { address: string; family: number }):
 function privateAddress(address: string): boolean {
   let normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
   if (normalized.startsWith("::ffff:")) normalized = mappedIpv4(normalized.slice(7));
-  if (normalized === "::1" || normalized === "::" || normalized.startsWith("fe80:") || normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+  if (isIP(normalized) === 6) return nonPublicIpv6.check(normalized, "ipv6");
   const match = /^(?:\d{1,3}\.){3}\d{1,3}$/.exec(normalized);
   if (!match) return false;
-  const [a = 0, b = 0] = normalized.split(".").map(Number);
+  const [a = 0, b = 0, c = 0] = normalized.split(".").map(Number);
   return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254)
-    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 168)) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 168 || (b === 88 && c === 99)))
+    || (a === 198 && (b === 18 || b === 19 || b === 51)) || (a === 203 && b === 0 && c === 113) || a >= 224;
 }
 
 function mappedIpv4(value: string): string {

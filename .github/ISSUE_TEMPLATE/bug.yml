@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible defect without secrets or user data.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include provider keys, Puter tokens, cookies, `.env`, databases, backups, private prompts, or personal data. Report security issues privately.
+  - type: input
+    id: version
+    attributes:
+      label: Commit or release
+      placeholder: Git commit SHA or release tag
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options: [Local npm, Docker Compose, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal sanitized steps and expected versus actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, cookies, private prompts, user data, databases, and backups.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

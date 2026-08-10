@@ -6,6 +6,7 @@ services:
       context: ..
       dockerfile: Dockerfile
       args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24.13.0-bookworm-slim}
         VERSION: ${HARNESS_VERSION:-local}
         REVISION: ${HARNESS_REVISION:-unknown}
     image: ${HARNESS_IMAGE:-free-ai-harness:local}
@@ -48,7 +49,7 @@ services:
         max-file: "5"
 
   caddy:
-    image: caddy:2.10.2-alpine
+    image: ${CADDY_IMAGE:-caddy:2.10.2-alpine}
     restart: unless-stopped
     depends_on:
       harness:
