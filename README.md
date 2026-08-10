@@ -51,6 +51,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now free-ai-harness.service
 ```
 
+For a small HTTPS preview, follow the non-destructive [Tailscale Funnel guide](./deploy/TAILSCALE.md). For a release deployment with immutable images, Caddy, backups, SBOMs, and rollback, use [production operations](./deploy/OPERATIONS.md) and the [release procedure](./deploy/RELEASE.md).
+
 ## API
 
 Set `HARNESS_API_KEY` for machine clients, then request only `model: "auto"`:
