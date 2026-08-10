@@ -1,7 +1,10 @@
 import { lookup } from "node:dns/promises";
 import { execFile } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
 import { mkdirSync } from "node:fs";
-import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -16,9 +19,17 @@ export interface AgentTool {
   execute(argumentsJson: string): Promise<string>;
 }
 
-export function builtInTools(workspaceRoot = resolve("workspace")): AgentTool[] {
+export interface BuiltInToolOptions {
+  allowNetwork?: boolean;
+  allowWorkspace?: boolean;
+  allowExecution?: boolean;
+  workspaceByteLimit?: number;
+  workspaceFileLimit?: number;
+}
+
+export function builtInTools(workspaceRoot = resolve("workspace"), options: BuiltInToolOptions = {}): AgentTool[] {
   mkdirSync(workspaceRoot, { recursive: true });
-  return [
+  const tools: AgentTool[] = [
     {
       definition: {
         type: "function",
@@ -140,11 +151,32 @@ export function builtInTools(workspaceRoot = resolve("workspace")): AgentTool[] 
       async execute(argumentsJson) {
         const { path, content } = JSON.parse(argumentsJson) as { path?: string; content?: string };
         if (!path || typeof content !== "string") throw new Error("path and content are required");
+        if (path.length > 500) throw new Error("Path exceeds 500 characters");
         if (content.length > 1_000_000) throw new Error("File exceeds 1 MB");
         const target = safePath(workspaceRoot, path);
         await mkdir(dirname(target), { recursive: true });
         await assertParentInside(workspaceRoot, target);
-        await writeFile(target, content, { encoding: "utf8", mode: 0o600 });
+        const usage = await workspaceUsage(workspaceRoot);
+        let previousBytes = 0;
+        let targetExists = false;
+        try {
+          const previous = await lstat(target);
+          if (previous.isSymbolicLink()) throw new Error("Refusing to replace a symlink");
+          targetExists = true;
+          previousBytes = previous.isFile() ? previous.size : 0;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        const byteLimit = options.workspaceByteLimit ?? 50 * 1024 * 1024;
+        const fileLimit = options.workspaceFileLimit ?? 1_000;
+        if (usage.bytes - previousBytes + Buffer.byteLength(content) > byteLimit) throw new Error("Workspace storage quota exceeded");
+        if (!targetExists && usage.files >= fileLimit) throw new Error("Workspace file-count quota exceeded");
+        const handle = await open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 0o600);
+        try {
+          await handle.writeFile(content, { encoding: "utf8" });
+        } finally {
+          await handle.close();
+        }
         return `Wrote ${Buffer.byteLength(content)} bytes to ${relative(workspaceRoot, target)}`;
       },
     },
@@ -163,7 +195,19 @@ export function builtInTools(workspaceRoot = resolve("workspace")): AgentTool[] 
         const packageJson = JSON.parse(await readFile(resolve(cwd, "package.json"), "utf8")) as { scripts?: { test?: string } };
         if (!packageJson.scripts?.test) throw new Error("No package test script exists");
         try {
-          const { stdout, stderr } = await execFileAsync("npm", ["test"], { cwd, timeout: 120_000, maxBuffer: 1_000_000, env: { ...process.env, CI: "true" } });
+          const { stdout, stderr } = await execFileAsync("npm", ["test"], {
+            cwd,
+            timeout: 120_000,
+            maxBuffer: 1_000_000,
+            env: {
+              PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+              CI: "true",
+              NODE_ENV: "test",
+              NO_PROXY: "*",
+              HTTP_PROXY: "",
+              HTTPS_PROXY: "",
+            },
+          });
           return `${stdout}\n${stderr}`.slice(-1_000_000);
         } catch (error) {
           const failure = error as Error & { stdout?: string; stderr?: string };
@@ -172,46 +216,133 @@ export function builtInTools(workspaceRoot = resolve("workspace")): AgentTool[] 
       },
     },
   ];
+  const allowNetwork = options.allowNetwork !== false;
+  const allowWorkspace = options.allowWorkspace !== false;
+  const allowExecution = options.allowExecution !== false;
+  return tools.filter((tool) => {
+    const name = tool.definition.function.name;
+    if (!allowNetwork && ["http_get", "web_search"].includes(name)) return false;
+    if (!allowWorkspace && ["list_files", "read_file", "write_file", "run_tests"].includes(name)) return false;
+    if (!allowExecution && name === "run_tests") return false;
+    return true;
+  });
+}
+
+async function workspaceUsage(root: string): Promise<{ bytes: number; files: number }> {
+  let bytes = 0;
+  let files = 0;
+  const pending = [root];
+  while (pending.length) {
+    const directory = pending.pop()!;
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile()) {
+        files += 1;
+        bytes += (await lstat(path)).size;
+      }
+      if (files > 10_000) throw new Error("Workspace contains too many files");
+    }
+  }
+  return { bytes, files };
 }
 
 async function getPublicUrl(input: string): Promise<string> {
   let url = new URL(input);
   for (let redirects = 0; redirects <= 3; redirects += 1) {
-    await assertPublicUrl(url);
-    const response = await fetch(url, {
-      redirect: "manual",
-      headers: { Accept: "text/plain,text/html,application/json", "User-Agent": "free-ai-harness/0.1" },
-      signal: AbortSignal.timeout(20_000),
-    });
+    const addresses = await assertPublicUrl(url);
+    const response = await pinnedGet(url, addresses[0]!);
     if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get("location");
+      const location = response.location;
       if (!location) throw new Error(`Redirect ${response.status} had no location`);
       url = new URL(location, url);
       continue;
     }
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const declaredLength = Number(response.headers.get("content-length") ?? 0);
-    if (declaredLength > 1_000_000) throw new Error("Response exceeds 1 MB");
-    const text = await response.text();
-    return text.slice(0, 1_000_000);
+    if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
+    return response.body.toString("utf8");
   }
   throw new Error("Too many redirects");
 }
 
-async function assertPublicUrl(url: URL): Promise<void> {
+async function assertPublicUrl(url: URL): Promise<Array<{ address: string; family: number }>> {
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP(S) URLs are allowed");
   if (url.username || url.password) throw new Error("Credentials in URLs are not allowed");
-  const addresses = isIP(url.hostname) ? [{ address: url.hostname }] : await lookup(url.hostname, { all: true });
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const literalFamily = isIP(hostname);
+  const addresses = literalFamily ? [{ address: hostname, family: literalFamily }] : await lookup(hostname, { all: true });
   if (!addresses.length || addresses.some(({ address }) => privateAddress(address))) throw new Error("Private or local network targets are blocked");
+  return addresses;
+}
+
+async function pinnedGet(url: URL, target: { address: string; family: number }): Promise<{ status: number; location?: string; body: Buffer }> {
+  return new Promise((resolveRequest, rejectRequest) => {
+    const absoluteDeadline = setTimeout(() => request.destroy(new Error("HTTP request exceeded its 30 second deadline")), 30_000);
+    const requester = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const request = requester({
+      protocol: url.protocol,
+      hostname: target.address,
+      family: target.family,
+      port: url.port || undefined,
+      method: "GET",
+      path: `${url.pathname}${url.search}`,
+      servername: url.protocol === "https:" ? url.hostname : undefined,
+      headers: { Host: url.host, Accept: "text/plain,text/html,application/json", "Accept-Encoding": "identity", "User-Agent": "free-ai-harness/0.1" },
+    }, (response) => {
+      const declaredLength = Number(response.headers["content-length"] ?? 0);
+      if (declaredLength > 1_000_000) {
+        response.destroy();
+        rejectRequest(new Error("Response exceeds 1 MB"));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      response.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > 1_000_000) response.destroy(new Error("Response exceeds 1 MB"));
+        else chunks.push(chunk);
+      });
+      response.on("error", (error) => {
+        clearTimeout(absoluteDeadline);
+        rejectRequest(error);
+      });
+      response.on("end", () => {
+        clearTimeout(absoluteDeadline);
+        resolveRequest({
+          status: response.statusCode ?? 500,
+          ...(typeof response.headers.location === "string" ? { location: response.headers.location } : {}),
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    request.setTimeout(20_000, () => request.destroy(new Error("HTTP request timed out")));
+    request.on("error", (error) => {
+      clearTimeout(absoluteDeadline);
+      rejectRequest(error);
+    });
+    request.on("close", () => clearTimeout(absoluteDeadline));
+    request.end();
+  });
 }
 
 function privateAddress(address: string): boolean {
-  const normalized = address.toLowerCase();
+  let normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized.startsWith("::ffff:")) normalized = mappedIpv4(normalized.slice(7));
   if (normalized === "::1" || normalized === "::" || normalized.startsWith("fe80:") || normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
   const match = /^(?:\d{1,3}\.){3}\d{1,3}$/.exec(normalized);
   if (!match) return false;
   const [a = 0, b = 0] = normalized.split(".").map(Number);
-  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+  return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 0 || b === 168)) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+}
+
+function mappedIpv4(value: string): string {
+  if (value.includes(".")) return value;
+  const parts = value.split(":");
+  if (parts.length !== 2) return value;
+  const high = Number.parseInt(parts[0] ?? "", 16);
+  const low = Number.parseInt(parts[1] ?? "", 16);
+  if (!Number.isInteger(high) || !Number.isInteger(low) || high < 0 || high > 0xffff || low < 0 || low > 0xffff) return value;
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
 }
 
 function safePath(root: string, requested: string): string {

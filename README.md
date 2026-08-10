@@ -86,5 +86,8 @@ Likewise, website-only consumer credits are not scraped. Higgsfield currently ha
 - Use least-privilege provider keys. They are AES-256-GCM encrypted at rest and never returned by the API.
 - Puter credentials are validated against Puter over HTTPS, converted to opaque local user IDs, and stored in the per-user encrypted vault.
 - Do not reuse the login password as the vault key in a shared or production installation.
-- Free providers whose policy permits training on prompts remain disabled unless `HARNESS_ALLOW_TRAINING_DATA=true` is explicitly set.
-- Paid fallback is absent by default, so the harness cannot silently spend money.
+- Direct free providers whose policy permits training on prompts remain disabled unless `HARNESS_ALLOW_TRAINING_DATA=true` is explicitly set. Puter is a user-authorized broker across upstream providers with differing privacy terms; its disclosure is shown before authorization.
+- Direct paid-provider fallback is absent by default. Puter is user-pays: the harness checks the reported allowance in free-only mode and blocks once exhausted, while Puter's own billing controls remain authoritative.
+- Per-user request, output-token, rolling usage, workspace, and concurrent-run ceilings limit accidental or abusive consumption. The rolling token ceiling depends on upstream usage reporting and is a safety rail, not a billing guarantee.
+- User workspaces are isolated. Production disables in-process code execution; network and file tools can be disabled independently. Stored runs and usage are retained for 30 days by default, and users can export or delete their account data from the dashboard.
+- Rate limits and runtime coordination are process-local. A multi-replica deployment needs a shared limiter and run coordinator before scaling horizontally.

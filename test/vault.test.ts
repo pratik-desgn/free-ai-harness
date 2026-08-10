@@ -39,3 +39,18 @@ test("user credentials are encrypted and isolated", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("user ciphertext cannot be decrypted under another user or vault key", () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-vault-boundary-"));
+  const path = join(directory, "state.db");
+  try {
+    const store = new Store(path);
+    const aliceVault = new CredentialVault(store, "c".repeat(64));
+    aliceVault.setForUser("alice", "puter", { PUTER_AUTH_TOKEN: "alice-secret" });
+
+    assert.deepEqual(aliceVault.allForUser("bob"), {});
+    assert.throws(() => new CredentialVault(store, "d".repeat(64)).allForUser("alice"));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

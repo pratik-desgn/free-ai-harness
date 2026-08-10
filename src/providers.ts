@@ -1,4 +1,5 @@
 import type { ModelSpec, ProviderSpec } from "./types.js";
+import { puterFreeAllowanceGuard } from "./puter-allowance.js";
 
 const model = (
   id: string,
@@ -25,10 +26,12 @@ export function configuredProviders(env: NodeJS.ProcessEnv = process.env): Provi
           apiKey: env.PUTER_AUTH_TOKEN,
           freeEligible: true,
           quotaKind: "variable",
-          dataMayTrain: false,
+          // Puter brokers multiple upstream model providers with differing policies.
+          dataMayTrain: true,
           models: [
             model("gpt-5.4-nano", 400_000, 84, 96, 84, 82, ["text", "vision", "tools", "json"]),
           ],
+          ...(env.HARNESS_FREE_ONLY === "false" ? {} : { availabilityCheck: puterFreeAllowanceGuard(env.PUTER_AUTH_TOKEN) }),
         }
       : undefined,
     env.OLLAMA_ENABLED !== "false"

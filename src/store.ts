@@ -72,6 +72,13 @@ export class Store {
         updated_at TEXT NOT NULL,
         PRIMARY KEY(user_id, provider_id)
       );
+      CREATE TABLE IF NOT EXISTS user_consents (
+        user_id TEXT NOT NULL,
+        consent_id TEXT NOT NULL,
+        version TEXT NOT NULL,
+        agreed_at TEXT NOT NULL,
+        PRIMARY KEY(user_id, consent_id)
+      );
       CREATE TABLE IF NOT EXISTS usage_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL DEFAULT 'operator',
@@ -97,6 +104,7 @@ export class Store {
       );
       CREATE TABLE IF NOT EXISTS model_feedback (
         run_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL DEFAULT 'operator',
         provider_id TEXT NOT NULL,
         model_id TEXT NOT NULL,
         rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),
@@ -106,6 +114,7 @@ export class Store {
     this.addColumnIfMissing("sessions", "user_id", "TEXT NOT NULL DEFAULT 'operator'");
     this.addColumnIfMissing("runs", "user_id", "TEXT NOT NULL DEFAULT 'operator'");
     this.addColumnIfMissing("usage_events", "user_id", "TEXT NOT NULL DEFAULT 'operator'");
+    this.addColumnIfMissing("model_feedback", "user_id", "TEXT NOT NULL DEFAULT 'operator'");
   }
 
   createSession(tokenHash: string, expiresAt: number, userId = "operator"): void {
@@ -125,8 +134,16 @@ export class Store {
     this.database.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash);
   }
 
+  deleteSessionsForUser(userId: string): void {
+    this.database.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+  }
+
   pruneSessions(now = Date.now()): void {
     this.database.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now);
+  }
+
+  ping(): boolean {
+    return (this.database.prepare("SELECT 1 AS ok").get() as { ok: number }).ok === 1;
   }
 
   setProviderSecret(providerId: string, ciphertext: string, iv: string, authTag: string): void {
@@ -162,6 +179,13 @@ export class Store {
     return row ? { id: row.id, provider: row.provider, externalId: row.external_id, displayName: row.display_name } : undefined;
   }
 
+  recordConsent(userId: string, consentId: string, version: string): void {
+    this.database.prepare(`
+      INSERT INTO user_consents(user_id, consent_id, version, agreed_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(user_id, consent_id) DO UPDATE SET version=excluded.version, agreed_at=excluded.agreed_at
+    `).run(userId, consentId, version, new Date().toISOString());
+  }
+
   setUserProviderSecret(userId: string, providerId: string, ciphertext: string, iv: string, authTag: string): void {
     this.database.prepare(`
       INSERT INTO user_provider_secrets(user_id, provider_id, ciphertext, iv, auth_tag, updated_at) VALUES (?, ?, ?, ?, ?, ?)
@@ -178,6 +202,24 @@ export class Store {
 
   deleteUserProviderSecret(userId: string, providerId: string): void {
     this.database.prepare("DELETE FROM user_provider_secrets WHERE user_id = ? AND provider_id = ?").run(userId, providerId);
+  }
+
+  deleteUserAccount(userId: string): void {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+      this.database.prepare("DELETE FROM user_provider_secrets WHERE user_id = ?").run(userId);
+      this.database.prepare("DELETE FROM user_consents WHERE user_id = ?").run(userId);
+      this.database.prepare("DELETE FROM model_feedback WHERE user_id = ?").run(userId);
+      this.database.prepare("DELETE FROM usage_events WHERE user_id = ?").run(userId);
+      this.database.prepare("DELETE FROM runs WHERE user_id = ?").run(userId);
+      this.database.prepare("DELETE FROM response_cache WHERE cache_key LIKE ?").run(`${userId}:%`);
+      this.database.prepare("DELETE FROM users WHERE id = ?").run(userId);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   recordUsage(event: {
@@ -204,6 +246,11 @@ export class Store {
     `).all(...(userId ? [since, userId] : [since])) as unknown as Array<Record<string, unknown>>;
   }
 
+  tokensUsedSince(userId: string, since: string): number {
+    const row = this.database.prepare("SELECT COALESCE(SUM(total_tokens), 0) AS total FROM usage_events WHERE user_id = ? AND created_at >= ?").get(userId, since) as { total: number };
+    return row.total;
+  }
+
   cacheGet(cacheKey: string, now = Date.now()): { providerId: string; modelId: string; body: string; contentType: string } | undefined {
     this.database.prepare("DELETE FROM response_cache WHERE expires_at <= ?").run(now);
     const row = this.database.prepare("SELECT provider_id, model_id, body, content_type FROM response_cache WHERE cache_key = ?").get(cacheKey) as {
@@ -220,17 +267,17 @@ export class Store {
     `).run(cacheKey, value.providerId, value.modelId, value.body, value.contentType, Date.now() + ttlMs, Date.now());
   }
 
-  recordFeedback(runId: string, providerId: string, modelId: string, rating: -1 | 1): void {
+  recordFeedback(runId: string, providerId: string, modelId: string, rating: -1 | 1, userId = "operator"): void {
     this.database.prepare(`
-      INSERT INTO model_feedback(run_id, provider_id, model_id, rating, created_at) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(run_id) DO UPDATE SET provider_id=excluded.provider_id, model_id=excluded.model_id, rating=excluded.rating, created_at=excluded.created_at
-    `).run(runId, providerId, modelId, rating, new Date().toISOString());
+      INSERT INTO model_feedback(run_id, user_id, provider_id, model_id, rating, created_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET user_id=excluded.user_id, provider_id=excluded.provider_id, model_id=excluded.model_id, rating=excluded.rating, created_at=excluded.created_at
+    `).run(runId, userId, providerId, modelId, rating, new Date().toISOString());
   }
 
-  providerFeedbackAdjustments(): Record<string, number> {
+  providerFeedbackAdjustments(userId = "operator"): Record<string, number> {
     const rows = this.database.prepare(`
-      SELECT provider_id, AVG(rating) AS average_rating, COUNT(*) AS ratings FROM model_feedback GROUP BY provider_id
-    `).all() as unknown as Array<{ provider_id: string; average_rating: number; ratings: number }>;
+      SELECT provider_id, AVG(rating) AS average_rating, COUNT(*) AS ratings FROM model_feedback WHERE user_id = ? GROUP BY provider_id
+    `).all(userId) as unknown as Array<{ provider_id: string; average_rating: number; ratings: number }>;
     return Object.fromEntries(rows.map((row) => [row.provider_id, Math.max(-10, Math.min(10, row.average_rating * Math.min(10, row.ratings))) ]));
   }
 
@@ -271,6 +318,30 @@ export class Store {
       ? this.database.prepare("SELECT * FROM runs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?").all(userId, bounded)
       : this.database.prepare("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?").all(bounded)) as unknown as RunRow[];
     return rows.map(fromRow);
+  }
+
+  activeRunCount(userId: string): number {
+    const row = this.database.prepare("SELECT COUNT(*) AS count FROM runs WHERE user_id = ? AND status IN ('queued', 'running')").get(userId) as { count: number };
+    return row.count;
+  }
+
+  totalActiveRunCount(): number {
+    const row = this.database.prepare("SELECT COUNT(*) AS count FROM runs WHERE status IN ('queued', 'running')").get() as { count: number };
+    return row.count;
+  }
+
+  pruneHistoricalData(beforeIso: string, now = Date.now()): void {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare("DELETE FROM runs WHERE status IN ('completed', 'failed', 'cancelled') AND updated_at < ?").run(beforeIso);
+      this.database.prepare("DELETE FROM usage_events WHERE created_at < ?").run(beforeIso);
+      this.database.prepare("DELETE FROM model_feedback WHERE run_id NOT IN (SELECT id FROM runs)").run();
+      this.database.prepare("DELETE FROM response_cache WHERE expires_at <= ?").run(now);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   updateRun(run: AgentRun): void {

@@ -32,3 +32,31 @@ test("rejected Puter credentials do not create an identity", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("Puter tokens are bounded before any network request", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    throw new Error("must not be called");
+  }) as typeof fetch;
+  try {
+    await assert.rejects(() => verifyPuterToken("too-short"), /Invalid Puter authorization/);
+    await assert.rejects(() => verifyPuterToken("x".repeat(8_193)), /Invalid Puter authorization/);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Puter authorization rejects malformed remote identities", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => Response.json(
+    String(input).endsWith("/whoami") ? { uuid: "", username: "Alice" } : { data: [] },
+  )) as typeof fetch;
+  try {
+    await assert.rejects(() => verifyPuterToken("p".repeat(40)), /invalid user identity/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

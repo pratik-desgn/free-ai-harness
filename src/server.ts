@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomBytes, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { Readable } from "node:stream";
+import { rm } from "node:fs/promises";
+import { Readable, Transform } from "node:stream";
 import { AgentEngine } from "./agent.js";
 import { Auth } from "./auth.js";
 import { LiveCatalog } from "./catalog.js";
@@ -9,15 +11,38 @@ import { Gateway, NoProviderError } from "./gateway.js";
 import { ensureLocalProvider } from "./local-provider.js";
 import { connectionDefinitions, credentialsEnvironment, unavailableServices, validateCredentials } from "./provider-connections.js";
 import { configuredProviders } from "./providers.js";
-import { verifyPuterToken } from "./puter-auth.js";
+import { PuterAuthError, verifyPuterToken } from "./puter-auth.js";
+import { applySecurityHeaders, RateLimiter, requestClientId, validRequestOrigin } from "./security.js";
 import { Store } from "./store.js";
 import { specializedJson, specializedTranscription } from "./specialized.js";
 import { builtInTools } from "./tools.js";
 import type { ChatRequest } from "./types.js";
-import { dashboardHtml, loginHtml } from "./ui.js";
+import { adminLoginHtml, dashboardHtml, loginHtml } from "./ui.js";
 import { CredentialVault } from "./vault.js";
 
-const port = Number(process.env.HARNESS_PORT ?? 8790);
+const port = positiveInteger("HARNESS_PORT", process.env.HARNESS_PORT ?? "8790", 65_535);
+const host = process.env.HARNESS_HOST?.trim() || "127.0.0.1";
+const publicOrigin = process.env.HARNESS_PUBLIC_ORIGIN?.trim() || undefined;
+const trustProxy = process.env.HARNESS_TRUST_PROXY === "true";
+const secureCookies = process.env.HARNESS_SECURE_COOKIES === "true" || publicOrigin?.startsWith("https://") === true;
+const jsonBodyLimit = positiveInteger("HARNESS_JSON_BODY_LIMIT", process.env.HARNESS_JSON_BODY_LIMIT ?? "2097152", 10 * 1024 * 1024);
+const uploadBodyLimit = positiveInteger("HARNESS_UPLOAD_BODY_LIMIT", process.env.HARNESS_UPLOAD_BODY_LIMIT ?? "10485760", 100 * 1024 * 1024);
+const maxActiveRuns = positiveInteger("HARNESS_MAX_ACTIVE_RUNS_PER_USER", process.env.HARNESS_MAX_ACTIVE_RUNS_PER_USER ?? "3", 100);
+const maxGlobalActiveRuns = positiveInteger("HARNESS_MAX_GLOBAL_ACTIVE_RUNS", process.env.HARNESS_MAX_GLOBAL_ACTIVE_RUNS ?? "50", 10_000);
+const maxUserRuntimes = positiveInteger("HARNESS_MAX_USER_RUNTIMES", process.env.HARNESS_MAX_USER_RUNTIMES ?? "500", 100_000);
+const retentionDays = positiveInteger("HARNESS_RETENTION_DAYS", process.env.HARNESS_RETENTION_DAYS ?? "30", 3650);
+const requestsPerMinute = positiveInteger("HARNESS_REQUESTS_PER_MINUTE", process.env.HARNESS_REQUESTS_PER_MINUTE ?? "120", 100_000);
+const requestTimeoutMs = positiveInteger("HARNESS_REQUEST_TIMEOUT_MS", process.env.HARNESS_REQUEST_TIMEOUT_MS ?? "120000", 900_000);
+const cacheTtlMs = positiveInteger("HARNESS_CACHE_TTL_MS", process.env.HARNESS_CACHE_TTL_MS ?? "3600000", 86_400_000);
+const sessionDays = positiveInteger("HARNESS_SESSION_DAYS", process.env.HARNESS_SESSION_DAYS ?? "30", 365);
+const maxAgentSteps = positiveInteger("HARNESS_MAX_AGENT_STEPS", process.env.HARNESS_MAX_AGENT_STEPS ?? "12", 100);
+const maxOutputTokens = positiveInteger("HARNESS_MAX_OUTPUT_TOKENS", process.env.HARNESS_MAX_OUTPUT_TOKENS ?? "8192", 131_072);
+const dailyTokenBudget = positiveInteger("HARNESS_DAILY_TOKEN_BUDGET", process.env.HARNESS_DAILY_TOKEN_BUDGET ?? "5000000", 1_000_000_000);
+const maxUpstreamResponseBytes = positiveInteger("HARNESS_MAX_UPSTREAM_RESPONSE_BYTES", process.env.HARNESS_MAX_UPSTREAM_RESPONSE_BYTES ?? "16777216", 100 * 1024 * 1024);
+const rateLimiter = new RateLimiter();
+let shuttingDown = false;
+process.umask(0o077);
+validateProductionConfiguration();
 const localProvider = await ensureLocalProvider();
 const dataDirectory = resolve(process.env.HARNESS_DATA_DIR ?? ".harness");
 const store = new Store(resolve(dataDirectory, "state.db"));
@@ -27,7 +52,8 @@ const auth = new Auth(
   store,
   process.env.HARNESS_LOGIN_PASSWORD,
   process.env.HARNESS_API_KEY,
-  Number(process.env.HARNESS_SESSION_DAYS ?? 30),
+  sessionDays,
+  secureCookies,
 );
 const gateway = new Gateway(
   providers,
@@ -35,20 +61,21 @@ const gateway = new Gateway(
     freeOnly: process.env.HARNESS_FREE_ONLY !== "false",
     allowTrainingData: process.env.HARNESS_ALLOW_TRAINING_DATA === "true",
   },
-  Number(process.env.HARNESS_REQUEST_TIMEOUT_MS ?? 120_000),
+  requestTimeoutMs,
   store,
-  Number(process.env.HARNESS_CACHE_TTL_MS ?? 3_600_000),
+  cacheTtlMs,
 );
-const requestTimeoutMs = Number(process.env.HARNESS_REQUEST_TIMEOUT_MS ?? 120_000);
 const catalog = new LiveCatalog();
 const agent = new AgentEngine(
   gateway,
   store,
-  builtInTools(resolve(process.env.HARNESS_WORKSPACE_ROOT ?? "workspace")),
-  Number(process.env.HARNESS_MAX_AGENT_STEPS ?? 12),
+  builtInTools(resolve(process.env.HARNESS_WORKSPACE_ROOT ?? "workspace"), { allowExecution: process.env.NODE_ENV !== "production" }),
+  maxAgentSteps,
 );
 
 interface UserRuntime {
+  userId: string;
+  lastUsed: number;
   providers: ReturnType<typeof configuredProviders>;
   gateway: Gateway;
   agent: AgentEngine;
@@ -56,19 +83,45 @@ interface UserRuntime {
 }
 
 const runtimes = new Map<string, UserRuntime>();
-runtimes.set("operator", { providers, gateway, agent, catalog });
+runtimes.set("operator", { userId: "operator", lastUsed: Date.now(), providers, gateway, agent, catalog });
 
 store.pruneSessions();
+pruneHistoricalData();
 agent.resumePersisted();
 void catalog.refresh(providers);
 const catalogTimer = setInterval(() => void catalog.refresh(providers), 10 * 60_000);
 catalogTimer.unref();
+const maintenanceTimer = setInterval(() => {
+  store.pruneSessions();
+  pruneHistoricalData();
+  evictIdleRuntimes();
+}, 60 * 60_000);
+maintenanceTimer.unref();
 
 const server = createServer(async (request, response) => {
+  const requestId = randomUUID();
+  const requestStarted = performance.now();
+  response.setHeader("x-request-id", requestId);
+  response.once("finish", () => {
+    if (!(request.url ?? "").startsWith("/health/")) console.log(JSON.stringify({
+      event: "request", requestId, method: request.method, path: safeLogPath(request.url), status: response.statusCode,
+      durationMs: Math.round((performance.now() - requestStarted) * 10) / 10,
+    }));
+  });
   try {
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
 
+    if (!validRequestOrigin(request, publicOrigin)) return json(response, 403, { error: { message: "Request origin is not allowed", type: "forbidden" } });
+    if (request.method === "GET" && url.pathname === "/health/live") {
+      return json(response, shuttingDown ? 503 : 200, { status: shuttingDown ? "stopping" : "ok" });
+    }
+    if (request.method === "GET" && url.pathname === "/health/ready") {
+      const ready = !shuttingDown && store.ping();
+      return json(response, ready ? 200 : 503, { status: ready ? "ready" : "not_ready" });
+    }
+
     if (request.method === "POST" && url.pathname === "/auth/login") {
+      if (!takeRateLimit(response, `login:${requestClientId(request, trustProxy)}`, 10, 15 * 60_000)) return;
       const body = await readJson<{ password?: string }>(request);
       if (!body.password || !auth.login(body.password, response)) {
         return json(response, 401, { error: { message: "Invalid login", type: "authentication_error" } });
@@ -76,10 +129,12 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { ok: true });
     }
     if (request.method === "POST" && url.pathname === "/auth/puter") {
+      if (!takeRateLimit(response, `puter-login:${requestClientId(request, trustProxy)}`, 10, 15 * 60_000)) return;
       const body = await readJson<{ token?: string; displayName?: string }>(request);
       if (!body.token) return invalid(response, "Puter authorization is required");
       const identity = await verifyPuterToken(body.token, body.displayName);
       store.upsertUser({ id: identity.id, provider: "puter", externalId: identity.externalId, displayName: identity.displayName });
+      store.recordConsent(identity.id, "puter-broker-privacy-and-billing", "2026-08-10");
       vault.setForUser(identity.id, "puter", { PUTER_AUTH_TOKEN: body.token.trim() });
       runtimes.delete(identity.id);
       const userRuntime = runtimeFor(identity.id);
@@ -89,17 +144,57 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { ok: true, user: { displayName: identity.displayName } });
     }
     if (request.method === "GET" && url.pathname === "/") {
-      return html(response, 200, auth.authorized(request) ? dashboardHtml : loginHtml);
+      const signedIn = auth.authorized(request);
+      return html(response, 200, signedIn ? dashboardHtml : loginHtml, !signedIn);
+    }
+    if (request.method === "GET" && url.pathname === "/admin/login") {
+      return auth.authorized(request) ? redirect(response, "/") : html(response, 200, adminLoginHtml, false);
     }
     const principal = auth.principal(request);
     if (!principal) {
       return json(response, 401, { error: { message: "Log in to the harness", type: "authentication_error" } });
     }
-    const runtime = runtimeFor(principal.id);
+    if (url.pathname.startsWith("/v1/") && !takeRateLimit(response, `api:${principal.id}`, requestsPerMinute, 60_000)) return;
+    if (isInferencePath(url.pathname) && store.tokensUsedSince(principal.id, new Date(Date.now() - 86_400_000).toISOString()) >= dailyTokenBudget) {
+      return json(response, 429, { error: { message: "Daily token safety budget is exhausted", type: "rate_limit_error" } });
+    }
     if (request.method === "POST" && url.pathname === "/auth/logout") {
       auth.logout(request, response);
       return json(response, 200, { ok: true });
     }
+    if (request.method === "POST" && url.pathname === "/auth/logout-all") {
+      store.deleteSessionsForUser(principal.id);
+      auth.logout(request, response);
+      return json(response, 200, { ok: true });
+    }
+    if (request.method === "GET" && url.pathname === "/v1/account/export") {
+      return json(response, 200, {
+        user: { displayName: principal.displayName, provider: principal.provider },
+        runs: store.listRuns(200, principal.id).map(publicRun),
+        usage: store.usageSummary("1970-01-01T00:00:00.000Z", principal.id),
+        exportedAt: new Date().toISOString(),
+      });
+    }
+    if (request.method === "DELETE" && url.pathname === "/v1/user-providers/puter") {
+      if (principal.provider !== "puter") return json(response, 403, { error: { message: "No user-owned Puter connection", type: "forbidden" } });
+      if (store.activeRunCount(principal.id) > 0) return json(response, 409, { error: { message: "Finish or cancel active workflows before disconnecting", type: "conflict" } });
+      vault.deleteForUser(principal.id, "puter");
+      runtimes.delete(principal.id);
+      auth.logout(request, response);
+      return json(response, 200, { ok: true });
+    }
+    if (request.method === "DELETE" && url.pathname === "/v1/account") {
+      if (principal.provider === "operator") return json(response, 403, { error: { message: "Administrator account cannot be deleted here", type: "forbidden" } });
+      const body = await readJson<{ confirmation?: string }>(request);
+      if (body.confirmation !== "DELETE") return invalid(response, "confirmation must equal DELETE");
+      if (store.activeRunCount(principal.id) > 0) return json(response, 409, { error: { message: "Finish or cancel active workflows before deleting the account", type: "conflict" } });
+      store.deleteUserAccount(principal.id);
+      runtimes.delete(principal.id);
+      await rm(userWorkspaceRoot(principal.id), { recursive: true, force: true });
+      auth.logout(request, response);
+      return json(response, 200, { ok: true });
+    }
+    const runtime = runtimeFor(principal.id);
     if (request.method === "GET" && url.pathname === "/auth/me") {
       return json(response, 200, { authenticated: true, user: { displayName: principal.displayName, provider: principal.provider }, universalAi: runtime.providers.some((provider) => provider.id === "puter") });
     }
@@ -156,8 +251,8 @@ const server = createServer(async (request, response) => {
       const body = await readJson<Record<string, unknown>>(request);
       if (body.model && body.model !== "auto") return invalid(response, "The harness exposes only model=auto");
       if (body.stream === true) return invalid(response, "Streaming Responses compatibility is not enabled yet");
-      const result = await runtime.gateway.complete(responsesRequest(body), request.headers);
-      const envelope = await result.response.json() as Record<string, unknown>;
+      const result = await runtime.gateway.complete(boundedChatRequest(responsesRequest(body)), request.headers);
+      const envelope = await responseJsonLimited<Record<string, unknown>>(result.response, maxUpstreamResponseBytes);
       recordKnownUsage(envelope, result, "responses", principal.id);
       response.setHeader("x-harness-provider", result.candidate.provider.id);
       if (result.cacheHit) response.setHeader("x-harness-cache", "hit");
@@ -167,8 +262,8 @@ const server = createServer(async (request, response) => {
       const body = await readJson<Record<string, unknown>>(request);
       if (body.model && body.model !== "auto") return invalid(response, "The harness exposes only model=auto");
       if (body.stream === true) return invalid(response, "Streaming Anthropic compatibility is not enabled yet");
-      const result = await runtime.gateway.complete(anthropicRequest(body), request.headers);
-      const envelope = await result.response.json() as Record<string, unknown>;
+      const result = await runtime.gateway.complete(boundedChatRequest(anthropicRequest(body)), request.headers);
+      const envelope = await responseJsonLimited<Record<string, unknown>>(result.response, maxUpstreamResponseBytes);
       recordKnownUsage(envelope, result, "anthropic", principal.id);
       response.setHeader("x-harness-provider", result.candidate.provider.id);
       if (result.cacheHit) response.setHeader("x-harness-cache", "hit");
@@ -197,14 +292,19 @@ const server = createServer(async (request, response) => {
       const body = await readJson<ChatRequest>(request);
       if (!Array.isArray(body.messages)) return invalid(response, "messages must be an array");
       if (body.model && body.model !== "auto") return invalid(response, "The harness exposes only model=auto");
-      const result = await runtime.gateway.complete({ ...body, model: "auto" }, request.headers);
+      const result = await runtime.gateway.complete(boundedChatRequest({ ...body, model: "auto" }), request.headers);
       void recordDirectUsage(result.response.clone(), result.candidate.provider.id, result.candidate.model.id, result.latencyMs, result.cacheHit ?? false, store, principal.id);
+      if (responseTooLarge(result.response, maxUpstreamResponseBytes)) {
+        await result.response.body?.cancel();
+        return json(response, 502, { error: { message: "Upstream response exceeded safety limit", type: "upstream_error" } });
+      }
       response.statusCode = result.response.status;
+      applySecurityHeaders(response, result.response.headers.get("content-type") ?? undefined, secureCookies);
       response.setHeader("content-type", result.response.headers.get("content-type") ?? "application/json");
       response.setHeader("x-harness-provider", result.candidate.provider.id);
       response.setHeader("x-harness-model", result.candidate.model.id);
       if (result.cacheHit) response.setHeader("x-harness-cache", "hit");
-      if (result.response.body) Readable.fromWeb(result.response.body as never).pipe(response);
+      if (result.response.body) pipeBodyLimited(result.response.body, response, maxUpstreamResponseBytes);
       else response.end();
       return;
     }
@@ -213,6 +313,8 @@ const server = createServer(async (request, response) => {
       const objective = body.objective?.trim();
       if (!objective) return invalid(response, "objective is required");
       if (objective.length > 100_000) return invalid(response, "objective exceeds 100,000 characters");
+      if (store.activeRunCount(principal.id) >= maxActiveRuns) return json(response, 429, { error: { message: `At most ${maxActiveRuns} workflows may run concurrently`, type: "rate_limit_error" } });
+      if (store.totalActiveRunCount() >= maxGlobalActiveRuns) return json(response, 503, { error: { message: "Workflow capacity is temporarily full", type: "capacity_error" } });
       return json(response, 202, publicRun(runtime.agent.create(objective)));
     }
     if (request.method === "GET" && url.pathname === "/v1/runs") {
@@ -237,14 +339,22 @@ const server = createServer(async (request, response) => {
       const route = [...run.events].reverse().find((event) => event.type === "model" && event.metadata?.provider && event.metadata?.model);
       if (!route?.metadata) return invalid(response, "run has no routing record");
       const providerId = String(route.metadata.provider);
-      store.recordFeedback(run.id, providerId, String(route.metadata.model), body.rating);
+      store.recordFeedback(run.id, providerId, String(route.metadata.model), body.rating, principal.id);
       applyFeedbackAdjustments();
       return json(response, 200, { ok: true });
     }
     return json(response, 404, { error: { message: "Not found", type: "invalid_request_error" } });
   } catch (error) {
-    const status = error instanceof NoProviderError ? 503 : error instanceof SyntaxError ? 400 : 500;
-    return json(response, status, { error: { message: error instanceof Error ? error.message : String(error), type: "harness_error" } });
+    const status = error instanceof NoProviderError ? 503 : error instanceof PuterAuthError ? error.status : error instanceof SyntaxError ? 400 : 500;
+    if (status >= 500) console.error(JSON.stringify({
+      event: "request_error", requestId, status,
+      error: error instanceof Error ? error.message : String(error),
+      ...(process.env.NODE_ENV === "production" ? {} : { stack: error instanceof Error ? error.stack : undefined }),
+    }));
+    const message = error instanceof NoProviderError ? "All eligible AI providers are currently unavailable"
+      : error instanceof PuterAuthError || error instanceof SyntaxError ? error.message
+      : "Internal server error";
+    return json(response, status, { error: { message, type: status === 401 ? "authentication_error" : "harness_error" } });
   }
 });
 
@@ -258,30 +368,40 @@ function refreshProviders(): void {
 
 function runtimeFor(userId: string): UserRuntime {
   const existing = runtimes.get(userId);
-  if (existing) return existing;
+  if (existing) {
+    existing.lastUsed = Date.now();
+    return existing;
+  }
+  evictIdleRuntimes(maxUserRuntimes - 1);
+  if (userRuntimeCount() >= maxUserRuntimes) throw new NoProviderError("Runtime capacity is full");
   const userProviders = configuredProviders(userProviderEnvironment(userId));
+  const userAuthorizedBroker = userProviders.some((provider) => provider.id === "puter");
   const userGateway = new Gateway(
     userProviders,
     {
       freeOnly: process.env.HARNESS_FREE_ONLY !== "false",
-      allowTrainingData: process.env.HARNESS_ALLOW_TRAINING_DATA === "true",
+      allowTrainingData: process.env.HARNESS_ALLOW_TRAINING_DATA === "true" || userAuthorizedBroker,
     },
     requestTimeoutMs,
     {
       cacheGet: (key) => store.cacheGet(`${userId}:${key}`),
       cacheSet: (key, value, ttlMs) => store.cacheSet(`${userId}:${key}`, value, ttlMs),
     },
-    Number(process.env.HARNESS_CACHE_TTL_MS ?? 3_600_000),
+    cacheTtlMs,
   );
   const userCatalog = new LiveCatalog();
   const userAgent = new AgentEngine(
     userGateway,
     store,
-    builtInTools(resolve(process.env.HARNESS_WORKSPACE_ROOT ?? "workspace")),
-    Number(process.env.HARNESS_MAX_AGENT_STEPS ?? 12),
+    builtInTools(userWorkspaceRoot(userId), {
+      allowNetwork: process.env.HARNESS_ALLOW_USER_NETWORK_TOOLS !== "false",
+      allowWorkspace: process.env.HARNESS_ALLOW_USER_WORKSPACE_TOOLS !== "false",
+      allowExecution: process.env.NODE_ENV !== "production" && process.env.HARNESS_ALLOW_USER_CODE_EXECUTION === "true",
+    }),
+    maxAgentSteps,
     userId,
   );
-  const created = { providers: userProviders, gateway: userGateway, agent: userAgent, catalog: userCatalog };
+  const created = { userId, lastUsed: Date.now(), providers: userProviders, gateway: userGateway, agent: userAgent, catalog: userCatalog };
   runtimes.set(userId, created);
   applyFeedbackAdjustments();
   userAgent.resumePersisted();
@@ -300,26 +420,62 @@ function userProviderEnvironment(userId: string): NodeJS.ProcessEnv {
   return environment;
 }
 
+function userWorkspaceRoot(userId: string): string {
+  return resolve(process.env.HARNESS_WORKSPACE_ROOT ?? "workspace", "users", userId.replace(/[^a-zA-Z0-9._-]/g, "_"));
+}
+
 function applyFeedbackAdjustments(): void {
-  for (const [providerId, adjustment] of Object.entries(store.providerFeedbackAdjustments())) {
-    for (const current of runtimes.values()) {
+  for (const current of runtimes.values()) {
+    for (const [providerId, adjustment] of Object.entries(store.providerFeedbackAdjustments(current.userId))) {
       const previous = current.gateway.runtime.get(providerId) ?? { failures: 0, unavailableUntil: 0 };
       current.gateway.runtime.set(providerId, { ...previous, qualityAdjustment: adjustment });
     }
   }
 }
 
+function userRuntimeCount(): number {
+  return [...runtimes.keys()].filter((userId) => userId !== "operator").length;
+}
+
+function evictIdleRuntimes(target = maxUserRuntimes): void {
+  if (userRuntimeCount() <= target) return;
+  const candidates = [...runtimes.values()]
+    .filter((runtime) => runtime.userId !== "operator" && store.activeRunCount(runtime.userId) === 0)
+    .sort((left, right) => left.lastUsed - right.lastUsed);
+  while (userRuntimeCount() > target && candidates.length) {
+    const oldest = candidates.shift();
+    if (oldest) runtimes.delete(oldest.userId);
+  }
+}
+
+function pruneHistoricalData(): void {
+  const before = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+  store.pruneHistoricalData(before);
+}
+
 applyFeedbackAdjustments();
 
 async function recordDirectUsage(response: Response, providerId: string, modelId: string, latencyMs: number, cacheHit: boolean, targetStore: Store, userId: string): Promise<void> {
-  if (!response.headers.get("content-type")?.includes("json")) return;
   try {
-    const body = await response.json() as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } };
+    const contentType = response.headers.get("content-type") ?? "";
+    let usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+    if (contentType.includes("json")) {
+      usage = (await responseJsonLimited<{ usage?: typeof usage }>(response, 1_000_000)).usage;
+    } else if (contentType.includes("text/event-stream")) {
+      const text = await responseTextLimited(response, 1_000_000);
+      for (const line of text.split("\n")) {
+        if (!line.startsWith("data:") || line.slice(5).trim() === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(line.slice(5).trim()) as { usage?: typeof usage };
+          if (parsed.usage) usage = parsed.usage;
+        } catch {}
+      }
+    } else return;
     targetStore.recordUsage({
       providerId, modelId, endpoint: cacheHit ? "chat:cache" : "chat", status: response.status, latencyMs,
-      promptTokens: cacheHit ? 0 : body.usage?.prompt_tokens ?? 0,
-      completionTokens: cacheHit ? 0 : body.usage?.completion_tokens ?? 0,
-      totalTokens: cacheHit ? 0 : body.usage?.total_tokens ?? 0,
+      promptTokens: cacheHit ? 0 : usage?.prompt_tokens ?? 0,
+      completionTokens: cacheHit ? 0 : usage?.completion_tokens ?? 0,
+      totalTokens: cacheHit ? 0 : usage?.total_tokens ?? 0,
       userId,
     });
   } catch {
@@ -337,23 +493,25 @@ function recordKnownUsage(envelope: Record<string, unknown>, result: Awaited<Ret
   });
 }
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`free-ai-harness listening on http://127.0.0.1:${port} with ${providers.length} provider(s)`);
+server.listen(port, host, () => {
+  console.log(`free-ai-harness listening on http://${host}:${port} with ${providers.length} provider(s)`);
   console.log(localProvider.message);
   if (!auth.configured()) console.warn("Set HARNESS_LOGIN_PASSWORD before exposing the service");
 });
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {
-  return JSON.parse((await readBuffer(request)).toString("utf8")) as T;
+  const contentType = request.headers["content-type"];
+  if (contentType && !contentType.toLowerCase().startsWith("application/json")) throw new SyntaxError("Content-Type must be application/json");
+  return JSON.parse((await readBuffer(request, jsonBodyLimit)).toString("utf8")) as T;
 }
 
-async function readBuffer(request: IncomingMessage): Promise<Buffer> {
+async function readBuffer(request: IncomingMessage, limit = uploadBodyLimit): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     bytes += buffer.length;
-    if (bytes > 10 * 1024 * 1024) throw new SyntaxError("Request body exceeds 10 MiB");
+    if (bytes > limit) throw new SyntaxError(`Request body exceeds ${limit} bytes`);
     chunks.push(buffer);
   }
   return Buffer.concat(chunks);
@@ -378,21 +536,155 @@ function invalid(response: ServerResponse, message: string): void {
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
+  applySecurityHeaders(response, "application/json", secureCookies);
+  response.setHeader("cache-control", "no-store");
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(value));
 }
 
-function html(response: ServerResponse, status: number, value: string): void {
+function html(response: ServerResponse, status: number, value: string, allowPuter = false): void {
+  applySecurityHeaders(response, "text/html", secureCookies);
+  const nonce = randomBytes(18).toString("base64url");
+  const securedHtml = value.replaceAll("<style>", `<style nonce="${nonce}">`).replaceAll("<script>", `<script nonce="${nonce}">`);
   response.writeHead(status, {
     "content-type": "text/html; charset=utf-8",
-    "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://js.puter.com; connect-src 'self' https://puter.com https://*.puter.com wss://*.puter.com; frame-src https://puter.com https://*.puter.com",
+    "content-security-policy": `default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'${allowPuter ? " https://js.puter.com" : ""}; connect-src 'self'${allowPuter ? " https://puter.com https://*.puter.com wss://*.puter.com" : ""}; frame-src ${allowPuter ? "https://puter.com https://*.puter.com" : "'none'"}`,
   });
-  response.end(value);
+  response.end(securedHtml);
+}
+
+function redirect(response: ServerResponse, location: string): void {
+  applySecurityHeaders(response, undefined, secureCookies);
+  response.writeHead(303, { location, "cache-control": "no-store" });
+  response.end();
 }
 
 function pipeResponse(response: ServerResponse, upstream: Response): void {
+  if (responseTooLarge(upstream, maxUpstreamResponseBytes)) {
+    void upstream.body?.cancel();
+    json(response, 502, { error: { message: "Upstream response exceeded safety limit", type: "upstream_error" } });
+    return;
+  }
+  applySecurityHeaders(response, upstream.headers.get("content-type") ?? undefined, secureCookies);
   response.statusCode = upstream.status;
   response.setHeader("content-type", upstream.headers.get("content-type") ?? "application/json");
-  if (upstream.body) Readable.fromWeb(upstream.body as never).pipe(response);
+  if (upstream.body) pipeBodyLimited(upstream.body, response, maxUpstreamResponseBytes);
   else response.end();
+}
+
+function responseTooLarge(response: Response, limit: number): boolean {
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  return Number.isFinite(declared) && declared > limit;
+}
+
+function pipeBodyLimited(body: ReadableStream<Uint8Array>, response: ServerResponse, limit: number): void {
+  let bytes = 0;
+  const limiter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      bytes += chunk.length;
+      callback(bytes > limit ? new Error("Upstream response exceeded safety limit") : null, chunk);
+    },
+  });
+  limiter.on("error", () => response.destroy());
+  Readable.fromWeb(body as never).pipe(limiter).pipe(response);
+}
+
+async function responseJsonLimited<T>(response: Response, limit: number): Promise<T> {
+  return JSON.parse(await responseTextLimited(response, limit)) as T;
+}
+
+async function responseTextLimited(response: Response, limit: number): Promise<string> {
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (declared > limit) {
+    await response.body?.cancel();
+    throw new Error("Upstream response exceeded safety limit");
+  }
+  if (!response.body) throw new Error("Upstream response was empty");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const item = await reader.read();
+      if (item.done) break;
+      bytes += item.value.byteLength;
+      if (bytes > limit) {
+        await reader.cancel();
+        throw new Error("Upstream response exceeded safety limit");
+      }
+      chunks.push(item.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const combined = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(combined);
+}
+
+function takeRateLimit(response: ServerResponse, key: string, limit: number, windowMs: number): boolean {
+  const result = rateLimiter.take(key, limit, windowMs);
+  response.setHeader("x-ratelimit-limit", String(limit));
+  response.setHeader("x-ratelimit-remaining", String(result.remaining));
+  if (result.allowed) return true;
+  response.setHeader("retry-after", String(result.retryAfterSeconds));
+  json(response, 429, { error: { message: "Too many requests; try again later", type: "rate_limit_error" } });
+  return false;
+}
+
+function positiveInteger(name: string, raw: string, maximum: number): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > maximum) throw new Error(`${name} must be an integer between 1 and ${maximum}`);
+  return value;
+}
+
+function safeLogPath(raw: string | undefined): string {
+  if (!raw) return "/";
+  try { return new URL(raw, "http://localhost").pathname.slice(0, 500); } catch { return "invalid"; }
+}
+
+function boundedChatRequest(request: ChatRequest): ChatRequest {
+  const raw = request.max_tokens ?? request.max_completion_tokens ?? Math.min(2_048, maxOutputTokens);
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1 || raw > maxOutputTokens) {
+    throw new SyntaxError(`Requested output tokens must be an integer between 1 and ${maxOutputTokens}`);
+  }
+  const bounded: ChatRequest = { ...request, max_tokens: raw };
+  delete bounded.max_completion_tokens;
+  return bounded;
+}
+
+function isInferencePath(pathname: string): boolean {
+  return ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/embeddings", "/v1/images/generations", "/v1/audio/transcriptions", "/v1/runs"].includes(pathname);
+}
+
+function validateProductionConfiguration(): void {
+  if (publicOrigin) {
+    const parsed = new URL(publicOrigin);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== publicOrigin.replace(/\/$/, "")) throw new Error("HARNESS_PUBLIC_ORIGIN must be an origin without a path");
+    if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:" && !["localhost", "127.0.0.1", "::1"].includes(parsed.hostname)) {
+      throw new Error("Production HARNESS_PUBLIC_ORIGIN must use HTTPS");
+    }
+  }
+  if (process.env.NODE_ENV !== "production") return;
+  if (!/^[a-f0-9]{64}$/i.test(process.env.HARNESS_VAULT_KEY ?? "")) throw new Error("Production HARNESS_VAULT_KEY must be an independent 32-byte hex secret");
+  if (!["127.0.0.1", "localhost", "::1"].includes(host) && !publicOrigin) throw new Error("Production non-loopback binding requires HARNESS_PUBLIC_ORIGIN");
+  if (process.env.HARNESS_LOGIN_PASSWORD && process.env.HARNESS_LOGIN_PASSWORD.length < 16) throw new Error("Production HARNESS_LOGIN_PASSWORD must be at least 16 characters");
+  if (process.env.HARNESS_API_KEY && !/^[a-f0-9]{64}$/i.test(process.env.HARNESS_API_KEY)) throw new Error("Production HARNESS_API_KEY must be an independent 32-byte hex secret");
+}
+
+server.requestTimeout = requestTimeoutMs + 10_000;
+server.headersTimeout = 30_000;
+server.keepAliveTimeout = 5_000;
+server.maxHeadersCount = 100;
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    shuttingDown = true;
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 30_000).unref();
+  });
 }

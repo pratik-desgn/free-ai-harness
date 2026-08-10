@@ -36,6 +36,7 @@ export interface ProviderSpec {
   dataMayTrain: boolean;
   models: ModelSpec[];
   extraHeaders?: Record<string, string>;
+  availabilityCheck?: () => Promise<void>;
 }
 
 export interface Candidate {

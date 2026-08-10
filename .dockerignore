@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.harness
+backups
+dist
+node_modules
+*.log
+.DS_Store
+deploy/*.local

@@ -1,0 +1,21 @@
+[Unit]
+Description=Free AI Harness production Compose stack
+Documentation=file:/opt/free-ai-harness/deploy/OPERATIONS.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/free-ai-harness
+EnvironmentFile=/opt/free-ai-harness/deploy/.env
+ExecStartPre=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml config --quiet
+ExecStart=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --remove-orphans
+ExecReload=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file deploy/.env -f deploy/docker-compose.yml down
+TimeoutStartSec=0
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

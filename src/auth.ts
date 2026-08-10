@@ -16,6 +16,7 @@ export class Auth {
     private readonly loginPassword: string | undefined,
     private readonly apiKey: string | undefined,
     private readonly sessionDays: number,
+    private readonly secureCookies = false,
   ) {}
 
   configured(): boolean {
@@ -50,14 +51,14 @@ export class Auth {
   logout(request: IncomingMessage, response: ServerResponse): void {
     const session = parseCookies(request.headers.cookie)[COOKIE_NAME];
     if (session) this.store.deleteSession(hashToken(session));
-    response.setHeader("set-cookie", `${COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+    response.setHeader("set-cookie", `${COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${this.secureCookies ? "; Secure" : ""}`);
   }
 
   private setSession(userId: string, response: ServerResponse): void {
     const token = randomBytes(32).toString("base64url");
     const maxAge = Math.max(1, this.sessionDays) * 24 * 60 * 60;
     this.store.createSession(hashToken(token), Date.now() + maxAge * 1_000, userId);
-    response.setHeader("set-cookie", `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`);
+    response.setHeader("set-cookie", `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${this.secureCookies ? "; Secure" : ""}`);
   }
 }
 

@@ -27,6 +27,7 @@ export class Gateway {
     readonly timeoutMs = 120_000,
     private readonly cache?: GatewayCache,
     private readonly cacheTtlMs = 3_600_000,
+    private readonly maxCacheBytes = 1_000_000,
   ) {}
 
   replaceProviders(providers: ProviderSpec[]): void {
@@ -61,6 +62,7 @@ export class Gateway {
     for (const candidate of candidates) {
       const started = performance.now();
       try {
+        await candidate.provider.availabilityCheck?.();
         const response = await fetch(`${candidate.provider.baseUrl}/chat/completions`, {
           method: "POST",
           headers: {
@@ -82,12 +84,14 @@ export class Gateway {
         if (response.ok) {
           if (cacheKey && this.cache) {
             const clone = response.clone();
-            void clone.text().then((body) => this.cache?.cacheSet(cacheKey, {
-              providerId: candidate.provider.id,
-              modelId: candidate.model.id,
-              body,
-              contentType: clone.headers.get("content-type") ?? "application/json",
-            }, this.cacheTtlMs)).catch(() => undefined);
+            void readTextLimited(clone, this.maxCacheBytes).then((body) => {
+              if (body !== undefined) this.cache?.cacheSet(cacheKey, {
+                providerId: candidate.provider.id,
+                modelId: candidate.model.id,
+                body,
+                contentType: clone.headers.get("content-type") ?? "application/json",
+              }, this.cacheTtlMs);
+            }).catch(() => undefined);
           }
           return { response, candidate, attempts, latencyMs: performance.now() - started, cacheHit: false };
         }
@@ -131,6 +135,39 @@ export class Gateway {
       unavailableUntil: failures >= 3 ? Date.now() + 30_000 : 0,
     });
   }
+}
+
+async function readTextLimited(response: Response, limit: number): Promise<string | undefined> {
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (declared > limit) {
+    await response.body?.cancel();
+    return undefined;
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const item = await reader.read();
+      if (item.done) break;
+      bytes += item.value.byteLength;
+      if (bytes > limit) {
+        await reader.cancel();
+        return undefined;
+      }
+      chunks.push(item.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const output = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(output);
 }
 
 function cacheable(request: ChatRequest): boolean {

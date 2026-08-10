@@ -50,3 +50,21 @@ test("agent continues after a tool call and completes the objective", async () =
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("agent engines cannot cancel or resume another user's workflow", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-agent-isolation-"));
+  try {
+    const store = new Store(join(directory, "state.db"));
+    const gateway = { complete: async () => new Promise<GatewayResult>(() => undefined) } as unknown as Gateway;
+    const alice = new AgentEngine(gateway, store, [], 4, "puter:alice");
+    const bob = new AgentEngine(gateway, store, [], 4, "puter:bob");
+    const aliceRun = alice.create("alice objective");
+
+    assert.equal(bob.cancel(aliceRun.id), undefined);
+    assert.equal(bob.resume(aliceRun.id), undefined);
+    assert.notEqual(store.getRun(aliceRun.id, "puter:alice")?.status, "cancelled");
+    assert.equal(alice.cancel(aliceRun.id)?.status, "cancelled");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
