@@ -5,16 +5,18 @@ import { verifyPuterToken } from "../src/puter-auth.js";
 test("Puter authorization is validated remotely and converted to an opaque identity", async () => {
   const originalFetch = globalThis.fetch;
   let authorization = "";
-  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     authorization = new Headers(init?.headers).get("authorization") ?? "";
-    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    const url = String(input);
+    return new Response(JSON.stringify(url.endsWith("/whoami") ? { uuid: "stable-puter-user", username: "Alice\nAdmin" } : { data: [] }), { status: 200 });
   }) as typeof fetch;
   try {
     const first = await verifyPuterToken("p".repeat(40), "Alice\nAdmin");
-    const second = await verifyPuterToken("p".repeat(40), "Alice");
+    const second = await verifyPuterToken("p".repeat(40), "Changed name");
     assert.equal(authorization, `Bearer ${"p".repeat(40)}`);
     assert.equal(first.id, second.id);
     assert.equal(first.displayName, "AliceAdmin");
+    assert.equal(first.externalId, "stable-puter-user");
     assert.match(first.id, /^puter:[a-f0-9]{64}$/);
   } finally {
     globalThis.fetch = originalFetch;
