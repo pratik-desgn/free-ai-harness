@@ -52,8 +52,8 @@ jobs:
         run: |
           container=$(docker run --detach --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,nodev \
-            --tmpfs /var/lib/free-ai-harness:rw,noexec,nosuid,nodev \
-            --tmpfs /workspace:rw,noexec,nosuid,nodev \
+            --tmpfs /var/lib/free-ai-harness:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700 \
+            --tmpfs /workspace:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700 \
             --publish 127.0.0.1::8790 \
             --env NODE_ENV=production \
             --env HARNESS_HOST=0.0.0.0 \
