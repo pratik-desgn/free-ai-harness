@@ -2,6 +2,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { createHash } from "node:crypto";
 import type { Candidate, ChatRequest, ProviderRuntime, ProviderSpec } from "./types.js";
 import { rankCandidates, type RouterOptions } from "./router.js";
+import { puterChatCompletion } from "./puter-transport.js";
 
 export class NoProviderError extends Error {}
 
@@ -63,23 +64,26 @@ export class Gateway {
       const started = performance.now();
       try {
         await candidate.provider.availabilityCheck?.();
-        const response = await fetch(`${candidate.provider.baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${candidate.provider.apiKey}`,
-            "Content-Type": "application/json",
-            ...candidate.provider.extraHeaders,
-            ...(typeof incomingHeaders["user-agent"] === "string" ? { "User-Agent": incomingHeaders["user-agent"] } : {}),
-          },
-          body: JSON.stringify({
-            ...request,
-            model: candidate.model.id,
-            ...(candidate.provider.id === "ollama"
-              ? { think: false, max_tokens: Math.min(Number(request.max_tokens ?? 160), 160), temperature: request.temperature ?? 0.2 }
-              : {}),
-          }),
-          signal: AbortSignal.timeout(this.timeoutMs),
-        });
+        const providerRequest = {
+          ...request,
+          model: candidate.model.id,
+          ...(candidate.provider.id === "ollama"
+            ? { think: false, max_tokens: Math.min(Number(request.max_tokens ?? 160), 160), temperature: request.temperature ?? 0.2 }
+            : {}),
+        };
+        const response = candidate.provider.chatTransport === "puter-driver"
+          ? await puterChatCompletion(candidate.provider, providerRequest, this.timeoutMs, this.maxCacheBytes)
+          : await fetch(`${candidate.provider.baseUrl}/chat/completions`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${candidate.provider.apiKey}`,
+                "Content-Type": "application/json",
+                ...candidate.provider.extraHeaders,
+                ...(typeof incomingHeaders["user-agent"] === "string" ? { "User-Agent": incomingHeaders["user-agent"] } : {}),
+              },
+              body: JSON.stringify(providerRequest),
+              signal: AbortSignal.timeout(this.timeoutMs),
+            });
         this.observe(candidate, response, performance.now() - started);
         if (response.ok) {
           if (cacheKey && this.cache) {

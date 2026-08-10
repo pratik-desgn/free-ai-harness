@@ -22,8 +22,9 @@ export function configuredProviders(env: NodeJS.ProcessEnv = process.env): Provi
       ? {
           id: "puter",
           label: "Universal AI by Puter",
-          baseUrl: "https://api.puter.com/puterai/openai/v1",
+          baseUrl: "https://api.puter.com",
           modelsUrl: "https://api.puter.com/puterai/chat/models/details",
+          chatTransport: "puter-driver",
           apiKey: env.PUTER_AUTH_TOKEN,
           freeEligible: true,
           quotaKind: "variable",

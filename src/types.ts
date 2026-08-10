@@ -31,6 +31,7 @@ export interface ProviderSpec {
   label: string;
   baseUrl: string;
   modelsUrl?: string;
+  chatTransport?: "openai" | "puter-driver";
   apiKey?: string;
   freeEligible: boolean;
   quotaKind?: "recurring" | "monthly-credit" | "trial" | "variable";
