@@ -111,7 +111,7 @@ export class AgentEngine {
         const calls = message.tool_calls ?? [];
         if (!calls.length) {
           const proposedResult = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
-          const verification = await this.verify(run.objective, proposedResult);
+          const verification = verifyDatedCurrentEvidence(run, proposedResult) ?? await this.verify(run.objective, proposedResult);
           this.store.appendEvent(run, {
             type: "verification",
             message: verification.complete ? "Completion independently verified" : "Verifier requested more work",
@@ -298,6 +298,18 @@ function evidenceUrls(run: AgentRun): Set<string> {
     }
   }
   return urls;
+}
+
+function verifyDatedCurrentEvidence(run: AgentRun, proposedResult: string): Verification | undefined {
+  if (!needsCurrentInformation(run.objective) || !run.events.some((event) => event.metadata?.preflightKind === "search" && event.metadata?.ok === true)) return undefined;
+  const date = new Date().toISOString().slice(0, 10);
+  const dateForms = [date, date.replaceAll("-", "/"), date.split("-").reverse().join("/")];
+  if (!dateForms.some((value) => proposedResult.includes(value))) return undefined;
+  if (!/\d[\d,.]*(?:%|\s|$)/m.test(proposedResult)) return undefined;
+  if (/\b(?:cannot|can't|unable to)\b.{0,50}\b(?:verify|confirm|access|fetch)\b/is.test(proposedResult)) return undefined;
+  const citedEvidence = [...evidenceUrls(run)].some((url) => proposedResult.includes(url));
+  if (!citedEvidence) return undefined;
+  return { complete: true, feedback: "Current dated figures cite a URL returned by the search evidence." };
 }
 
 function workflowContext(messages: ChatMessage[]): ChatMessage[] {

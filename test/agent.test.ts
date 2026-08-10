@@ -148,6 +148,33 @@ test("current-information workflows reject invented URLs and synthesize after th
   }
 });
 
+test("dated numeric updates citing searched URLs complete through deterministic evidence verification", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-agent-dated-evidence-"));
+  try {
+    const store = new Store(join(directory, "state.db"));
+    let calls = 0;
+    const today = new Date().toISOString().slice(0, 10);
+    const gateway = {
+      async complete(): Promise<GatewayResult> {
+        calls += 1;
+        return gatewayResult({ choices: [{ message: { role: "assistant", content: `Market update ${today}: index 2,650.09 (-0.15%). Source: https://example.com/market` } }] });
+      },
+    } as unknown as Gateway;
+    const search: AgentTool = {
+      definition: { type: "function", function: { name: "web_search", description: "search", parameters: { type: "object" } } },
+      async execute() { return `1. Market ${today}\nhttps://example.com/market\nIndex 2,650.09`; },
+    };
+    const run = new AgentEngine(gateway, store, [search], 12).create("market update today");
+    const finished = await waitForTerminal(store, run.id);
+    assert.equal(finished?.status, "completed");
+    assert.equal(finished?.step, 1);
+    assert.equal(calls, 1);
+    assert(finished?.events.some((event) => event.message === "Completion independently verified"));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("agent stops after three unsupported completion attempts instead of looping to the step limit", async () => {
   const directory = mkdtempSync(join(tmpdir(), "harness-agent-loop-"));
   try {
