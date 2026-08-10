@@ -68,3 +68,77 @@ test("agent engines cannot cancel or resume another user's workflow", async () =
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("today and market objectives search first and expose page fetching for evidence", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-agent-current-"));
+  try {
+    const store = new Store(join(directory, "state.db"));
+    let calls = 0;
+    const gateway = {
+      async complete(request: { tools?: Array<{ function: { name: string } }>; messages: Array<{ content?: unknown }> }): Promise<GatewayResult> {
+        calls += 1;
+        if (calls === 1) {
+          assert.deepEqual(request.tools?.map((tool) => tool.function.name), ["http_get"]);
+          assert(request.messages.some((message) => typeof message.content === "string" && message.content.includes("UNTRUSTED WEB-SEARCH EVIDENCE")));
+          return gatewayResult({ choices: [{ message: { role: "assistant", content: "Today's verified market update." } }] });
+        }
+        return gatewayResult({ choices: [{ message: { role: "assistant", content: JSON.stringify({ complete: true, feedback: "Current evidence included" }) } }] });
+      },
+    } as unknown as Gateway;
+    const search: AgentTool = {
+      definition: { type: "function", function: { name: "web_search", description: "search", parameters: { type: "object" } } },
+      async execute() { return "1. Current market\nhttps://example.com/market\nUpdated today"; },
+    };
+    const httpGet: AgentTool = {
+      definition: { type: "function", function: { name: "http_get", description: "read", parameters: { type: "object" } } },
+      async execute() { return "market evidence"; },
+    };
+    const run = new AgentEngine(gateway, store, [search, httpGet], 12).create("market update today");
+    const finished = await waitForTerminal(store, run.id);
+    assert.equal(finished?.status, "completed");
+    assert.equal(finished?.events.some((event) => event.metadata?.preflightKind === "search"), true);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("agent stops after three unsupported completion attempts instead of looping to the step limit", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-agent-loop-"));
+  try {
+    const store = new Store(join(directory, "state.db"));
+    let calls = 0;
+    const gateway = {
+      async complete(): Promise<GatewayResult> {
+        calls += 1;
+        return calls % 2 === 1
+          ? gatewayResult({ choices: [{ message: { role: "assistant", content: "I cannot obtain the required evidence." } }] })
+          : gatewayResult({ choices: [{ message: { role: "assistant", content: JSON.stringify({ complete: false, feedback: "Required evidence is missing" }) } }] });
+      },
+    } as unknown as Gateway;
+    const run = new AgentEngine(gateway, store, [], 12).create("complete an unsupported objective");
+    const finished = await waitForTerminal(store, run.id);
+    assert.equal(finished?.status, "failed");
+    assert.equal(finished?.step, 3);
+    assert.match(finished?.error ?? "", /could not obtain the required evidence after 3 attempts/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function gatewayResult(payload: unknown): GatewayResult {
+  return {
+    response: Response.json(payload),
+    candidate: { provider: { id: "mock" }, model: { id: "mock-model" }, score: 1, reasons: [] },
+    attempts: [],
+    latencyMs: 1,
+  } as unknown as GatewayResult;
+}
+
+async function waitForTerminal(store: Store, id: string) {
+  let run = store.getRun(id);
+  for (let attempt = 0; attempt < 100 && run && !["completed", "failed", "cancelled"].includes(run.status); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    run = store.getRun(id);
+  }
+  return run;
+}

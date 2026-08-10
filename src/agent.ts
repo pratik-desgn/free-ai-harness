@@ -123,6 +123,9 @@ export class AgentEngine {
             this.store.appendEvent(run, { type: "completed", message: "Objective completed" });
             return;
           }
+          if (incompleteVerificationCountSinceEvidence(run) >= 3) {
+            throw new Error(`Workflow could not obtain the required evidence after 3 attempts: ${verification.feedback}`);
+          }
           run.messages.push({ role: "user", content: `Completion verifier says the objective is not finished: ${verification.feedback}\nContinue working and resolve this gap.` });
           continue;
         }
@@ -166,7 +169,7 @@ export class AgentEngine {
         }
       }
     }
-    if (/\b(search|look up|find online|latest|current news|research)\b/i.test(run.objective) && !run.events.some((event) => event.metadata?.preflightKind === "search")) {
+    if (needsCurrentInformation(run.objective) && !run.events.some((event) => event.metadata?.preflightKind === "search")) {
       const search = this.toolsByName.get("web_search");
       if (!search) return false;
       try {
@@ -187,8 +190,10 @@ export class AgentEngine {
   private relevantTools(run: AgentRun): AgentTool[] {
     const objective = run.objective;
     const names = new Set<string>();
-    if (/\b(search|look up|find online|latest|current news|research)\b/i.test(objective) && !run.events.some((event) => event.metadata?.preflightKind === "search")) names.add("web_search");
-    if (/https?:\/\/|\b(read|fetch|open)\b.*\b(url|page|website)\b/i.test(objective)) names.add("http_get");
+    const currentInformation = needsCurrentInformation(objective);
+    const searched = run.events.some((event) => event.metadata?.preflightKind === "search");
+    if (currentInformation && !searched) names.add("web_search");
+    if ((currentInformation && searched) || /https?:\/\/|\b(read|fetch|open)\b.*\b(url|page|website)\b/i.test(objective)) names.add("http_get");
     if (/\b(time|date|timezone)\b/i.test(objective)) names.add("current_time");
     if (/\b[a-h][1-8]\b/i.test(objective) && /chess|board|square/i.test(objective) && !run.events.some((event) => event.metadata?.preflightKind === "chess")) names.add("chess_square_color");
     if (/\b(code|repository|project|file|build|implement|test|debug|typescript|javascript|python)\b/i.test(objective)) {
@@ -233,6 +238,20 @@ export class AgentEngine {
       userId: this.userId,
     });
   }
+}
+
+function needsCurrentInformation(objective: string): boolean {
+  return /\b(search|look up|find online|latest|today|current|update|news|market|price|stock|weather|score|research)\b/i.test(objective);
+}
+
+function incompleteVerificationCountSinceEvidence(run: AgentRun): number {
+  let count = 0;
+  for (let index = run.events.length - 1; index >= 0; index -= 1) {
+    const event = run.events[index]!;
+    if (event.type === "tool") break;
+    if (event.type === "verification" && event.message === "Verifier requested more work") count += 1;
+  }
+  return count;
 }
 
 function workflowContext(messages: ChatMessage[]): ChatMessage[] {
