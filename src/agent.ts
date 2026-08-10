@@ -33,18 +33,19 @@ export class AgentEngine {
     private readonly store: Store,
     tools: AgentTool[],
     private readonly maxSteps: number,
+    private readonly userId = "operator",
   ) {
     this.toolsByName = new Map(tools.map((tool) => [tool.definition.function.name, tool]));
   }
 
   create(objective: string): AgentRun {
-    const run = this.store.createRun(objective);
+    const run = this.store.createRun(objective, this.userId);
     this.start(run.id);
     return run;
   }
 
   resumePersisted(): void {
-    for (const run of this.store.resumableRuns()) this.start(run.id);
+    for (const run of this.store.resumableRuns(this.userId)) this.start(run.id);
   }
 
   start(id: string): void {
@@ -54,7 +55,7 @@ export class AgentEngine {
   }
 
   cancel(id: string): AgentRun | undefined {
-    const run = this.store.getRun(id);
+    const run = this.store.getRun(id, this.userId);
     if (!run || ["completed", "failed", "cancelled"].includes(run.status)) return run;
     run.status = "cancelled";
     this.store.updateRun(run);
@@ -62,7 +63,7 @@ export class AgentEngine {
   }
 
   resume(id: string): AgentRun | undefined {
-    const run = this.store.getRun(id);
+    const run = this.store.getRun(id, this.userId);
     if (!run || run.status !== "failed") return run;
     run.status = "queued";
     run.step = 0;
@@ -73,7 +74,7 @@ export class AgentEngine {
   }
 
   private async execute(id: string): Promise<void> {
-    const run = this.store.getRun(id);
+    const run = this.store.getRun(id, this.userId);
     if (!run || ["completed", "cancelled"].includes(run.status)) return;
     run.status = "running";
     this.store.updateRun(run);
@@ -81,7 +82,7 @@ export class AgentEngine {
     try {
       if (await this.runPreflight(run)) return;
       while (run.step < this.maxSteps) {
-        if (this.store.getRun(id)?.status === "cancelled") return;
+        if (this.store.getRun(id, this.userId)?.status === "cancelled") return;
         run.step += 1;
         const result = await this.gateway.complete({
           model: "auto",
@@ -91,7 +92,7 @@ export class AgentEngine {
           stream: false,
           max_tokens: 400,
         });
-        if (this.store.getRun(id)?.status === "cancelled") {
+        if (this.store.getRun(id, this.userId)?.status === "cancelled") {
           await result.response.body?.cancel();
           return;
         }
@@ -126,7 +127,7 @@ export class AgentEngine {
         }
 
         for (const call of calls) {
-          if (this.store.getRun(id)?.status === "cancelled") return;
+          if (this.store.getRun(id, this.userId)?.status === "cancelled") return;
           const tool = this.toolsByName.get(call.function.name);
           let content: string;
           try {
@@ -228,6 +229,7 @@ export class AgentEngine {
       totalTokens: envelope.usage?.total_tokens ?? 0,
       status: result.response.status,
       latencyMs: result.latencyMs,
+      userId: this.userId,
     });
   }
 }

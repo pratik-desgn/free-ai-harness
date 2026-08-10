@@ -4,6 +4,12 @@ import type { Store } from "./store.js";
 
 const COOKIE_NAME = "harness_session";
 
+export interface Principal {
+  id: string;
+  provider: "operator" | "puter";
+  displayName: string;
+}
+
 export class Auth {
   constructor(
     private readonly store: Store,
@@ -16,26 +22,42 @@ export class Auth {
     return Boolean(this.loginPassword || this.apiKey);
   }
 
-  authorized(request: IncomingMessage): boolean {
+  principal(request: IncomingMessage): Principal | undefined {
     const bearer = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if (bearer && this.apiKey && secureEqual(bearer, this.apiKey)) return true;
+    if (bearer && this.apiKey && secureEqual(bearer, this.apiKey)) return { id: "operator", provider: "operator", displayName: "Administrator" };
     const session = parseCookies(request.headers.cookie)[COOKIE_NAME];
-    return session ? this.store.validSession(hashToken(session)) : false;
+    const userId = session ? this.store.sessionUser(hashToken(session)) : undefined;
+    if (!userId) return undefined;
+    if (userId === "operator") return { id: userId, provider: "operator", displayName: "Administrator" };
+    const user = this.store.getUser(userId);
+    return user ? { id: user.id, provider: "puter", displayName: user.displayName } : undefined;
+  }
+
+  authorized(request: IncomingMessage): boolean {
+    return this.principal(request) !== undefined;
   }
 
   login(password: string, response: ServerResponse): boolean {
     if (!this.loginPassword || !secureEqual(password, this.loginPassword)) return false;
-    const token = randomBytes(32).toString("base64url");
-    const maxAge = Math.max(1, this.sessionDays) * 24 * 60 * 60;
-    this.store.createSession(hashToken(token), Date.now() + maxAge * 1_000);
-    response.setHeader("set-cookie", `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`);
+    this.setSession("operator", response);
     return true;
+  }
+
+  createUserSession(userId: string, response: ServerResponse): void {
+    this.setSession(userId, response);
   }
 
   logout(request: IncomingMessage, response: ServerResponse): void {
     const session = parseCookies(request.headers.cookie)[COOKIE_NAME];
     if (session) this.store.deleteSession(hashToken(session));
     response.setHeader("set-cookie", `${COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+  }
+
+  private setSession(userId: string, response: ServerResponse): void {
+    const token = randomBytes(32).toString("base64url");
+    const maxAge = Math.max(1, this.sessionDays) * 24 * 60 * 60;
+    this.store.createSession(hashToken(token), Date.now() + maxAge * 1_000, userId);
+    response.setHeader("set-cookie", `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`);
   }
 }
 

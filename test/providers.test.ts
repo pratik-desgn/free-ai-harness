@@ -27,6 +27,15 @@ test("Hugging Face monthly credits expose its OpenAI-compatible routed catalog",
   assert(provider?.models.some((model) => model.id.includes("DeepSeek-V4-Pro")));
 });
 
+test("a Puter authorization exposes universal user-owned AI capacity", () => {
+  const [provider] = configuredProviders({ OLLAMA_ENABLED: "false", PUTER_AUTH_TOKEN: "puter-user-token" });
+  assert.equal(provider?.id, "puter");
+  assert.equal(provider?.baseUrl, "https://api.puter.com/puterai/openai/v1");
+  assert.equal(provider?.apiKey, "puter-user-token");
+  assert.equal(provider?.quotaKind, "variable");
+  assert.equal(provider?.models[0]?.id, "gpt-5.4-nano");
+});
+
 test("custom connectors require a safe URL and an explicit data policy", () => {
   assert.throws(() => validateCredentials("custom", {
     CUSTOM_PROVIDER_LABEL: "unsafe",

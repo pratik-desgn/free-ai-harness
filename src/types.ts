@@ -65,6 +65,7 @@ export interface RunEvent {
 
 export interface AgentRun {
   id: string;
+  userId: string;
   status: RunStatus;
   objective: string;
   messages: ChatMessage[];

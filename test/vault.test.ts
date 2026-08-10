@@ -21,3 +21,21 @@ test("provider credentials are encrypted at rest and can be disconnected", () =>
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("user credentials are encrypted and isolated", () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-user-vault-"));
+  const path = join(directory, "state.db");
+  try {
+    const vault = new CredentialVault(new Store(path), "b".repeat(64));
+    vault.setForUser("alice", "puter", { PUTER_AUTH_TOKEN: "alice-secret-token" });
+    vault.setForUser("bob", "puter", { PUTER_AUTH_TOKEN: "bob-secret-token" });
+    assert.equal(vault.allForUser("alice").puter?.PUTER_AUTH_TOKEN, "alice-secret-token");
+    assert.equal(vault.allForUser("bob").puter?.PUTER_AUTH_TOKEN, "bob-secret-token");
+    assert.equal(readFileSync(path).includes(Buffer.from("alice-secret-token")), false);
+    vault.deleteForUser("alice", "puter");
+    assert.equal(vault.connectedForUser("alice").has("puter"), false);
+    assert.equal(vault.connectedForUser("bob").has("puter"), true);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

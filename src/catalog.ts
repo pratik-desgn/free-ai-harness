@@ -30,7 +30,7 @@ export class LiveCatalog {
       const availableModels = payload.data?.map((item) => item.id).filter((id): id is string => Boolean(id))
         ?? payload.models?.map((item) => item.model ?? item.name).filter((id): id is string => Boolean(id))
         ?? [];
-      if (["nvidia", "huggingface"].includes(provider.id)) addDiscoveredChatModels(provider, availableModels);
+      if (["puter", "nvidia", "huggingface"].includes(provider.id)) addDiscoveredChatModels(provider, availableModels);
       this.status.set(provider.id, { checkedAt, healthy: true, availableModels });
     } catch (error) {
       this.status.set(provider.id, { checkedAt, healthy: false, availableModels: [], error: error instanceof Error ? error.message : String(error) });

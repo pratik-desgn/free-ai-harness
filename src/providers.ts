@@ -17,6 +17,20 @@ const model = (
  */
 export function configuredProviders(env: NodeJS.ProcessEnv = process.env): ProviderSpec[] {
   const candidates: Array<ProviderSpec | undefined> = [
+    env.PUTER_AUTH_TOKEN
+      ? {
+          id: "puter",
+          label: "Universal AI by Puter",
+          baseUrl: "https://api.puter.com/puterai/openai/v1",
+          apiKey: env.PUTER_AUTH_TOKEN,
+          freeEligible: true,
+          quotaKind: "variable",
+          dataMayTrain: false,
+          models: [
+            model("gpt-5.4-nano", 400_000, 84, 96, 84, 82, ["text", "vision", "tools", "json"]),
+          ],
+        }
+      : undefined,
     env.OLLAMA_ENABLED !== "false"
       ? {
           id: "ollama",

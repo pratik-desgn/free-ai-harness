@@ -6,7 +6,9 @@ It uses legitimate provider APIs and local Ollama. It does **not** create accoun
 
 ## Implemented
 
-- One 30-day browser session and optional bearer key for API clients
+- One-click Puter authorization for user-owned access to hundreds of models
+- Isolated multi-user sessions, encrypted credentials, workflows, usage, and caches
+- Administrator password fallback and optional bearer key for API clients
 - Only one public model name: `auto`
 - OpenAI-compatible chat completions, including streaming
 - Non-streaming OpenAI Responses and Anthropic Messages compatibility
@@ -18,9 +20,9 @@ It uses legitimate provider APIs and local Ollama. It does **not** create accoun
 - Built-in web search, safe HTTP, local workspace file tools, restricted test execution, time, and deterministic chess-square reasoning
 - Private local Ollama fallback that the service starts automatically when installed
 
-Supported connections: NVIDIA NIM, Z.AI/GLM, Hugging Face Inference Providers, Groq, Gemini, GitHub Models, OpenRouter, Cloudflare Workers AI, Mistral, Cerebras, SambaNova, and any additional OpenAI-compatible endpoint through the custom connector. One NVIDIA key exposes the harness to free prototype endpoints for DeepSeek, Kimi, GLM, Nemotron, MiniMax, Qwen, GPT-OSS, and other chat models discovered from NVIDIA's live catalog. The browser never asks the end user to select one.
+Supported connections: Puter Universal AI, NVIDIA NIM, Z.AI/GLM, Hugging Face Inference Providers, Groq, Gemini, GitHub Models, OpenRouter, Cloudflare Workers AI, Mistral, Cerebras, SambaNova, and any additional OpenAI-compatible endpoint through the custom connector. Puter supplies the primary user-owned model pool. One NVIDIA key exposes an administrator to free prototype endpoints for DeepSeek, Kimi, GLM, Nemotron, MiniMax, Qwen, GPT-OSS, and other chat models discovered from NVIDIA's live catalog. The browser never asks the end user to select one.
 
-“One login” means the end user signs into this harness once after an administrator completes provider onboarding. It cannot mean one password signs into unrelated vendors: providers issue account-specific API keys and do not share a universal identity system. Keys are connected once in the dashboard, encrypted, and then invisible to end users.
+For an end user, “one login” is the **Continue with Universal AI** action. Puter authenticates the user and the harness validates and encrypts the resulting app credential. Every user gets a separate provider pool and separate workflow state. Administrator-connected capacity is not shared with users unless `HARNESS_SHARE_OPERATOR_CAPACITY=true` is explicitly enabled.
 
 ## Run
 
@@ -38,7 +40,7 @@ chmod 600 .env
 npm start
 ```
 
-Open <http://127.0.0.1:8790> and log in once. The included user service can keep it running:
+Open <http://127.0.0.1:8790> and choose **Continue with Universal AI**. The included user service can keep it running:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -72,7 +74,7 @@ Primary routes:
 
 ## Honest limits
 
-“Free” is not one fungible token balance. Providers enforce different request/day, token/minute, model, trial-credit, and acceptable-use limits. A rate limit is a ceiling, not a promised daily grant. Live model and quota responses are therefore authoritative, and the harness does not promise “one billion free tokens.”
+“Free” is not one fungible token balance. Providers enforce different request/day, token/minute, model, trial-credit, and acceptable-use limits. A rate limit is a ceiling, not a promised daily grant. Live model and quota responses are therefore authoritative. Aggregate capacity can grow into billions of tokens across a sufficiently large genuine user base, but the harness does not promise one billion free tokens to each user.
 
 OpenAI and Anthropic commercial APIs are not treated as recurring free providers. Their consumer subscriptions cannot be reused as API access. Image and hosted audio routes require a compatible connected provider; local Ollama supplies chat and embeddings, not those modalities.
 
@@ -82,6 +84,7 @@ Likewise, website-only consumer credits are not scraped. Higgsfield currently ha
 
 - Keep the server on localhost unless it is placed behind TLS and access control.
 - Use least-privilege provider keys. They are AES-256-GCM encrypted at rest and never returned by the API.
+- Puter credentials are validated against Puter over HTTPS, converted to opaque local user IDs, and stored in the per-user encrypted vault.
 - Do not reuse the login password as the vault key in a shared or production installation.
 - Free providers whose policy permits training on prompts remain disabled unless `HARNESS_ALLOW_TRAINING_DATA=true` is explicitly set.
 - Paid fallback is absent by default, so the harness cannot silently spend money.

@@ -23,3 +23,24 @@ test("sessions and agent runs survive reopening the store", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("sessions, workflows, and usage are isolated by user", () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-users-"));
+  try {
+    const store = new Store(join(directory, "state.db"));
+    store.upsertUser({ id: "puter:alice", provider: "puter", externalId: "alice", displayName: "Alice" });
+    store.upsertUser({ id: "puter:bob", provider: "puter", externalId: "bob", displayName: "Bob" });
+    store.createSession("alice-session", Date.now() + 60_000, "puter:alice");
+    assert.equal(store.sessionUser("alice-session"), "puter:alice");
+    const aliceRun = store.createRun("alice objective", "puter:alice");
+    store.createRun("bob objective", "puter:bob");
+    assert.equal(store.listRuns(50, "puter:alice").length, 1);
+    assert.equal(store.listRuns(50, "puter:bob").length, 1);
+    assert.equal(store.getRun(aliceRun.id, "puter:bob"), undefined);
+    store.recordUsage({ userId: "puter:alice", providerId: "puter", modelId: "auto", endpoint: "chat", totalTokens: 12, status: 200, latencyMs: 1 });
+    assert.equal(store.usageSummary("2000-01-01", "puter:alice")[0]?.total_tokens, 12);
+    assert.equal(store.usageSummary("2000-01-01", "puter:bob").length, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
