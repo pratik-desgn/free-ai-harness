@@ -90,7 +90,7 @@ test("today and market objectives search first and expose page fetching for evid
       definition: { type: "function", function: { name: "web_search", description: "search", parameters: { type: "object" } } },
       async execute(argumentsJson) {
         const { query } = JSON.parse(argumentsJson) as { query: string };
-        assert.match(query, /market update today \d{4}-\d{2}-\d{2}$/);
+        assert.match(query, /market update today \d{4}-\d{2}-\d{2} index points change turnover$/);
         return "1. Current market\nhttps://example.com/market\nUpdated today";
       },
     };
