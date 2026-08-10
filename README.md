@@ -48,7 +48,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   -d '{"model":"auto:coding","messages":[{"role":"user","content":"Write a binary search in TypeScript"}]}'
 ```
 
-Open `http://127.0.0.1:8787`, log in once, and submit an objective. The 30-day session survives browser restarts. API clients can use the optional machine-to-machine `HARNESS_API_KEY` and must request `model: "auto"`.
+Open `http://127.0.0.1:8790`, log in once, and submit an objective. The 30-day session survives browser restarts. API clients can use the optional machine-to-machine `HARNESS_API_KEY` and must request `model: "auto"`.
 
 ## Honest limits
 
