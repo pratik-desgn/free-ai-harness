@@ -217,19 +217,19 @@ export class AgentEngine {
       messages: [
         {
           role: "system",
-          content: "Act as a strict completion verifier. Decide whether the proposed result fully satisfies the objective with supported evidence. Return JSON only: {\"complete\":boolean,\"feedback\":string}.",
+          content: "Act as a strict completion verifier. Decide whether the proposed result fully satisfies the objective with supported evidence. Return one JSON object only: {\"complete\":boolean,\"feedback\":string}. Keep feedback under 30 words.",
         },
         { role: "user", content: `OBJECTIVE:\n${objective}\n\nPROPOSED RESULT:\n${proposedResult}` },
       ],
       response_format: { type: "json_object" },
       stream: false,
-      max_tokens: 120,
+      max_tokens: 300,
     });
     const envelope = (await result.response.json()) as CompletionEnvelope;
     this.recordUsage(result, envelope, "verification");
     const content = envelope.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("Completion verifier returned no result");
-    const parsed = JSON.parse(content) as Partial<Verification>;
+    const parsed = parseVerificationJson(content);
     if (typeof parsed.complete !== "boolean") throw new Error("Completion verifier returned an invalid verdict");
     return { complete: parsed.complete, feedback: typeof parsed.feedback === "string" ? parsed.feedback : "No feedback supplied" };
   }
@@ -246,6 +246,18 @@ export class AgentEngine {
       latencyMs: result.latencyMs,
       userId: this.userId,
     });
+  }
+}
+
+function parseVerificationJson(content: string): Partial<Verification> {
+  const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    return JSON.parse(trimmed) as Partial<Verification>;
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1)) as Partial<Verification>;
+    throw new Error("Completion verifier returned malformed JSON");
   }
 }
 
