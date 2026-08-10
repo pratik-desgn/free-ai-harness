@@ -106,8 +106,21 @@ export function builtInTools(workspaceRoot = resolve("workspace"), options: Buil
       async execute(argumentsJson) {
         const { query } = JSON.parse(argumentsJson) as { query?: string };
         if (!query?.trim()) throw new Error("query is required");
-        const html = await getPublicUrl(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query.slice(0, 500))}`);
-        return searchResults(html);
+        const encoded = encodeURIComponent(query.slice(0, 500));
+        const endpoints = [
+          `https://search.brave.com/search?q=${encoded}&source=web`,
+          `https://html.duckduckgo.com/html/?q=${encoded}`,
+          `https://www.bing.com/search?q=${encoded}&count=8`,
+        ];
+        for (const endpoint of endpoints) {
+          try {
+            const results = parseSearchResults(await getPublicUrl(endpoint));
+            if (results) return results;
+          } catch {
+            // Public search frontends occasionally rate-limit automation; try the next independent source.
+          }
+        }
+        throw new Error("Search providers returned no usable results");
       },
     },
     {
@@ -372,13 +385,34 @@ async function assertParentInside(root: string, target: string): Promise<void> {
   if (resolvedParent !== resolvedRoot && !resolvedParent.startsWith(`${resolvedRoot}${sep}`)) throw new Error("Symlink escapes the managed workspace");
 }
 
-function searchResults(html: string): string {
-  const results = [...html.matchAll(/class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g)]
+export function parseSearchResults(html: string): string {
+  const brave = [...html.matchAll(/<div class="snippet [^"]*"[^>]*data-type="web"[\s\S]*?<a href="(https?:\/\/[^"#]+)"[\s\S]*?<div class="title [^"]*"[^>]*>([\s\S]*?)<\/div>[\s\S]*?<div class="generic-snippet[^"]*">[\s\S]*?<div class="content [^"]*">([\s\S]*?)<\/div>/g)]
+    .slice(0, 8)
+    .map((match, index) => `${index + 1}. ${plainText(match[2] ?? "")}\n${match[1] ?? ""}\n${plainText(match[3] ?? "")}`);
+  if (brave.length) return brave.join("\n\n");
+  const duckDuckGo = [...html.matchAll(/class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g)]
     .slice(0, 8)
     .map((match, index) => `${index + 1}. ${plainText(match[2] ?? "")}\n${decodeURIComponent(match[1] ?? "")}\n${plainText(match[3] ?? "")}`);
-  return results.length ? results.join("\n\n") : plainText(html).slice(0, 8_000);
+  if (duckDuckGo.length) return duckDuckGo.join("\n\n");
+  const bing = [...html.matchAll(/<li class="b_algo"[\s\S]*?<h2[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>[\s\S]*?<\/li>/g)]
+    .slice(0, 8)
+    .map((match, index) => `${index + 1}. ${plainText(match[2] ?? "")}\n${bingTarget(match[1] ?? "")}\n${plainText(match[3] ?? "")}`)
+    .filter((result) => /\nhttps?:\/\//.test(result));
+  return bing.join("\n\n");
+}
+
+function bingTarget(value: string): string {
+  try {
+    const url = new URL(value.replace(/&amp;/g, "&"));
+    const encoded = url.searchParams.get("u");
+    if (!encoded?.startsWith("a1")) return url.href;
+    const decoded = Buffer.from(encoded.slice(2), "base64url").toString("utf8");
+    return /^https?:\/\//.test(decoded) ? decoded : "";
+  } catch {
+    return "";
+  }
 }
 
 function plainText(html: string): string {
-  return html.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/\s+/g, " ").trim();
+  return html.replace(/<!--[\s\S]*?-->/g, " ").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
 }
