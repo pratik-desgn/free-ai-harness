@@ -87,7 +87,11 @@ test("today and market objectives search first and expose page fetching for evid
     } as unknown as Gateway;
     const search: AgentTool = {
       definition: { type: "function", function: { name: "web_search", description: "search", parameters: { type: "object" } } },
-      async execute() { return "1. Current market\nhttps://example.com/market\nUpdated today"; },
+      async execute(argumentsJson) {
+        const { query } = JSON.parse(argumentsJson) as { query: string };
+        assert.match(query, /market update today \d{4}-\d{2}-\d{2}$/);
+        return "1. Current market\nhttps://example.com/market\nUpdated today";
+      },
     };
     const httpGet: AgentTool = {
       definition: { type: "function", function: { name: "http_get", description: "read", parameters: { type: "object" } } },
@@ -97,6 +101,45 @@ test("today and market objectives search first and expose page fetching for evid
     const finished = await waitForTerminal(store, run.id);
     assert.equal(finished?.status, "completed");
     assert.equal(finished?.events.some((event) => event.metadata?.preflightKind === "search"), true);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("current-information workflows reject invented URLs and synthesize after three page attempts", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "harness-agent-evidence-budget-"));
+  try {
+    const store = new Store(join(directory, "state.db"));
+    let calls = 0;
+    let fetchExecutions = 0;
+    const toolCall = (id: string, url: string) => ({ choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "http_get", arguments: JSON.stringify({ url }) } }] } }] });
+    const gateway = {
+      async complete(request: { tools?: Array<{ function: { name: string } }> }): Promise<GatewayResult> {
+        calls += 1;
+        if (calls === 1) return gatewayResult(toolCall("invented", "https://invented.example/today"));
+        if (calls === 2) return gatewayResult(toolCall("allowed-1", "https://example.com/market"));
+        if (calls === 3) return gatewayResult(toolCall("allowed-2", "https://example.com/market"));
+        if (calls === 4) {
+          assert.deepEqual(request.tools, []);
+          return gatewayResult({ choices: [{ message: { role: "assistant", content: "Synthesized from bounded evidence." } }] });
+        }
+        return gatewayResult({ choices: [{ message: { role: "assistant", content: JSON.stringify({ complete: true, feedback: "Bounded evidence used" }) } }] });
+      },
+    } as unknown as Gateway;
+    const search: AgentTool = {
+      definition: { type: "function", function: { name: "web_search", description: "search", parameters: { type: "object" } } },
+      async execute() { return "1. Market\nhttps://example.com/market\nCurrent figures"; },
+    };
+    const httpGet: AgentTool = {
+      definition: { type: "function", function: { name: "http_get", description: "read", parameters: { type: "object" } } },
+      async execute() { fetchExecutions += 1; return "page evidence"; },
+    };
+    const run = new AgentEngine(gateway, store, [search, httpGet], 12).create("market update today");
+    const finished = await waitForTerminal(store, run.id);
+    assert.equal(finished?.status, "completed");
+    assert.equal(finished?.step, 4);
+    assert.equal(fetchExecutions, 2);
+    assert(finished?.messages.some((message) => message.role === "tool" && typeof message.content === "string" && message.content.includes("do not invent paths")));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
